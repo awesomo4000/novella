@@ -59,6 +59,23 @@ zig build run -- - < manuscript.txt
 zig build run -- --text "The first sentence was already waiting."
 ```
 
+### Windows platform sample
+
+On Windows, the default build installs a native Unicode GUI application with a
+minimal resizable window. The first-stage target deliberately contains no
+editor or renderer code; it establishes the isolated Win32 application
+boundary before the macOS writing sheet is extracted into shared modules.
+
+The application requires Windows 10 version 1607 or newer:
+
+```sh
+zig build
+zig build run
+```
+
+The explicit platform steps are `zig build windows` and
+`zig build run-windows`.
+
 ### X11 platform sample
 
 The X11 target is deliberately separate from the AppKit application. It

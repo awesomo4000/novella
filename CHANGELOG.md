@@ -26,3 +26,5 @@
 - Licensed original Novella source under MPL-2.0 while preserving all
   third-party terms.
 - Added the major cross-platform application architecture specification.
+- Added a Windows 10 native application target with an isolated Win32 window
+  and per-monitor DPI support.
