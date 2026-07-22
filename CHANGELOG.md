@@ -25,3 +25,4 @@
   Xau core sources.
 - Licensed original Novella source under MPL-2.0 while preserving all
   third-party terms.
+- Added the major cross-platform application architecture specification.
