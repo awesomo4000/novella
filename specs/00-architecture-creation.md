@@ -290,6 +290,9 @@ The shared layout layer is responsible for:
 - splitting text into paragraphs;
 - requesting text metrics from the shared HarfBuzz text engine;
 - invoking `justify.Layout`;
+- creating zero-space wrap boundaries inside tokens wider than the available
+  measure, preferring URL punctuation and otherwise preserving UTF-8
+  boundaries;
 - positioning lines and inter-word spaces;
 - computing visual caret rows;
 - reporting document-space bounds to the sheet viewport.

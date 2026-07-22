@@ -38,3 +38,7 @@
   does not paint over the following character.
 - Added justif-compatible badness-only emergency stretch and a real-font
   resize regression test to prevent catastrophic two-word spacing.
+- Added zero-space wrap boundaries for oversized URLs and other uninterrupted
+  tokens so editor text cannot escape the sheet horizontally.
+- Made the rescue pass prefer contained ragged lines over overfull lines and
+  bounded painted emergency spacing to prevent whitespace chasms.

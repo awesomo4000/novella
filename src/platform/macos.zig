@@ -357,9 +357,11 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
                     x += word.width;
                     if (index + 1 < line_words.len) {
                         const next_word = line_words[index + 1];
-                        const gap_end = paragraph_start + sliceOffset(paragraph, next_word.text);
-                        recordGapCaretStops(shown, word_start + word.text.len, gap_end, x, baseline, line.space_width);
-                        x += line.space_width;
+                        if (next_word.space_before) {
+                            const gap_end = paragraph_start + sliceOffset(paragraph, next_word.text);
+                            recordGapCaretStops(shown, word_start + word.text.len, gap_end, x, baseline, line.space_width);
+                            x += line.space_width;
+                        }
                     }
                 }
                 caret_x = x;

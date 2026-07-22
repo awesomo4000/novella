@@ -118,7 +118,8 @@ expansion.
 
 This extraction covers the reusable heart of `justif`: TeX-exact
 badness, fitness classes, demerits, whole-paragraph optimal breaking, flexible
-word spaces, a natural final line, and an emergency overfull pass. DOM-only
+word spaces, a natural final line, an emergency-stretch pass, and editor-safe
+wrapping of oversized tokens without inserted spaces. DOM-only
 features such as CSS run reconstruction are intentionally outside this Zig
 library. Hyphenation patterns and variable-font expansion are also left as
 future renderer-facing extensions.

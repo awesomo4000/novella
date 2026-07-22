@@ -69,12 +69,19 @@ pub const Options = struct {
     /// justif's automatic value of twelve natural spaces (roughly 3 em).
     /// Set this to zero to disable the dedicated emergency-stretch pass.
     emergency_stretch: ?f64 = null,
+    /// Maximum positive adjustment ratio that may be painted. More extreme
+    /// rescue lines stay naturally spaced rather than opening visible chasms.
+    max_rendered_stretch_ratio: f64 = 10.0,
 };
 
 pub const Word = struct {
-    /// Slice of the caller-owned paragraph passed to `Layout.init`.
+    /// Slice of the caller-owned paragraph passed to `Layout.init`. Oversized
+    /// tokens may be represented by multiple contiguous fragments.
     text: []const u8,
     width: f64,
+    /// Whether collapsible source whitespace precedes this fragment. A false
+    /// value after the first word marks a zero-width emergency wrap boundary.
+    space_before: bool,
 };
 
 pub const Line = struct {
@@ -93,8 +100,11 @@ pub const Line = struct {
 
     pub fn renderedWidth(self: Line, words: []const Word) f64 {
         var result: f64 = 0;
-        for (words[self.word_start..self.word_end]) |word| result += word.width;
-        const gaps = self.word_end - self.word_start -| 1;
+        var gaps: usize = 0;
+        for (words[self.word_start..self.word_end], 0..) |word, index| {
+            result += word.width;
+            if (index > 0 and word.space_before) gaps += 1;
+        }
         return result + @as(f64, @floatFromInt(gaps)) * self.space_width;
     }
 };
@@ -121,6 +131,8 @@ pub const Layout = struct {
         if (options.emergency_stretch) |value| {
             if (value < 0 or !std.math.isFinite(value)) return error.InvalidFlex;
         }
+        if (options.max_rendered_stretch_ratio < 0 or !std.math.isFinite(options.max_rendered_stretch_ratio))
+            return error.InvalidFlex;
 
         var word_list: std.ArrayList(Word) = .empty;
         errdefer word_list.deinit(allocator);
@@ -134,7 +146,15 @@ pub const Layout = struct {
                 const text = paragraph[start..cursor];
                 const width = measurer.width(text);
                 if (width < 0 or !std.math.isFinite(width)) return error.InvalidMeasurement;
-                try word_list.append(allocator, .{ .text = text, .width = width });
+                try appendTokenFragments(
+                    allocator,
+                    &word_list,
+                    text,
+                    width,
+                    target_width,
+                    measurer,
+                    word_list.items.len > 0,
+                );
             }
         }
 
@@ -155,8 +175,14 @@ pub const Layout = struct {
 
         const prefix = try allocator.alloc(f64, words.len + 1);
         defer allocator.free(prefix);
+        const space_prefix = try allocator.alloc(usize, words.len + 1);
+        defer allocator.free(space_prefix);
         prefix[0] = 0;
-        for (words, 0..) |word, i| prefix[i + 1] = prefix[i] + word.width;
+        space_prefix[0] = 0;
+        for (words, 0..) |word, i| {
+            prefix[i + 1] = prefix[i] + word.width;
+            space_prefix[i + 1] = space_prefix[i] + @intFromBool(word.space_before);
+        }
 
         const stretch = natural_space * options.space_stretch;
         const shrink = natural_space * options.space_shrink;
@@ -168,6 +194,7 @@ pub const Layout = struct {
                 allocator,
                 words,
                 prefix,
+                space_prefix,
                 target_width,
                 natural_space,
                 stretch,
@@ -183,6 +210,7 @@ pub const Layout = struct {
                 allocator,
                 words,
                 prefix,
+                space_prefix,
                 target_width,
                 natural_space,
                 stretch,
@@ -199,6 +227,7 @@ pub const Layout = struct {
                 allocator,
                 words,
                 prefix,
+                space_prefix,
                 target_width,
                 natural_space,
                 stretch,
@@ -215,6 +244,7 @@ pub const Layout = struct {
                 allocator,
                 words,
                 prefix,
+                space_prefix,
                 target_width,
                 natural_space,
                 stretch,
@@ -261,6 +291,7 @@ fn attempt(
     allocator: std.mem.Allocator,
     words: []const Word,
     prefix: []const f64,
+    space_prefix: []const usize,
     target: f64,
     natural_space: f64,
     stretch_per_space: f64,
@@ -279,7 +310,7 @@ fn attempt(
 
     for (1..words.len + 1) |end| {
         for (0..end) |start| {
-            const gaps = end - start - 1;
+            const gaps = interwordGapCount(words, space_prefix, start, end);
             const gap_count: f64 = @floatFromInt(gaps);
             const natural = prefix[end] - prefix[start] + gap_count * natural_space;
             const final_line = end == words.len;
@@ -310,6 +341,10 @@ fn attempt(
                 if (!previous.valid) continue;
 
                 var d = lineDemerits(options.line_penalty, line_badness);
+                // In the rescue pass, any contained line is preferable to
+                // text escaping the measure. Truly unbreakable glyphs still
+                // get an overfull result because no contained route exists.
+                if (overfull) d +|= @as(u64, 1) << 60;
                 const fit_distance = @abs(@as(i8, @intCast(@intFromEnum(current_fitness))) - @as(i8, @intCast(@intFromEnum(previous_fitness))));
                 if (fit_distance > 1) d +|= options.adjacent_fitness_demerits;
                 const total = previous.total_demerits +| d;
@@ -356,11 +391,12 @@ fn attempt(
     while (position > 0) {
         const state = stateAtConst(states, position, fit);
         const start = state.previous_position;
-        const gaps = position - start - 1;
+        const gaps = interwordGapCount(words, space_prefix, start, position);
         const gap_count: f64 = @floatFromInt(gaps);
         const natural = prefix[position] - prefix[start] + gap_count * natural_space;
         const final_line = position == words.len;
-        const should_justify = !final_line or natural > target;
+        const should_justify = (!final_line or natural > target) and
+            state.ratio <= options.max_rendered_stretch_ratio;
         var rendered_space = natural_space;
         if (should_justify and gaps > 0 and std.math.isFinite(state.ratio)) {
             rendered_space += if (state.ratio >= 0)
@@ -400,6 +436,127 @@ fn isCollapsibleSpace(byte: u8) bool {
         ' ', '\t', '\n', '\r', 0x0b, 0x0c => true,
         else => false,
     };
+}
+
+const FragmentBreak = struct {
+    end: usize,
+    width: f64,
+};
+
+fn appendTokenFragments(
+    allocator: std.mem.Allocator,
+    words: *std.ArrayList(Word),
+    token: []const u8,
+    token_width: f64,
+    target_width: f64,
+    measurer: Measurer,
+    space_before: bool,
+) !void {
+    if (token_width <= target_width) {
+        try words.append(allocator, .{
+            .text = token,
+            .width = token_width,
+            .space_before = space_before,
+        });
+        return;
+    }
+
+    var start: usize = 0;
+    var first = true;
+    while (start < token.len) {
+        const remainder = token[start..];
+        const remainder_width = measurer.width(remainder);
+        if (remainder_width < 0 or !std.math.isFinite(remainder_width))
+            return error.InvalidMeasurement;
+
+        const fragment = if (remainder_width <= target_width)
+            FragmentBreak{ .end = token.len, .width = remainder_width }
+        else blk: {
+            const hard = try hardFragmentBreak(allocator, remainder, target_width, measurer);
+            var soft_end: usize = 0;
+            var cursor: usize = 0;
+            while (cursor < hard.end) {
+                const next = nextUtf8Boundary(remainder, cursor);
+                if (next <= hard.end and isPreferredWrapByte(remainder[cursor])) soft_end = next;
+                cursor = next;
+            }
+            if (soft_end > 0) {
+                const soft_width = measurer.width(remainder[0..soft_end]);
+                if (soft_width < 0 or !std.math.isFinite(soft_width))
+                    return error.InvalidMeasurement;
+                // Prefer nearby URL and identifier punctuation, but do not
+                // leave a tiny fragment merely to avoid an arbitrary wrap.
+                if (soft_width >= hard.width * 0.7)
+                    break :blk FragmentBreak{ .end = start + soft_end, .width = soft_width };
+            }
+            break :blk FragmentBreak{ .end = start + hard.end, .width = hard.width };
+        };
+
+        if (fragment.end <= start) return error.InvalidMeasurement;
+        try words.append(allocator, .{
+            .text = token[start..fragment.end],
+            .width = fragment.width,
+            .space_before = first and space_before,
+        });
+        first = false;
+        start = fragment.end;
+    }
+}
+
+fn hardFragmentBreak(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    target_width: f64,
+    measurer: Measurer,
+) !FragmentBreak {
+    var boundaries: std.ArrayList(usize) = .empty;
+    defer boundaries.deinit(allocator);
+
+    var cursor: usize = 0;
+    while (cursor < text.len) {
+        cursor = nextUtf8Boundary(text, cursor);
+        try boundaries.append(allocator, cursor);
+    }
+
+    var low: usize = 0;
+    var high: usize = boundaries.items.len;
+    var best: ?FragmentBreak = null;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        const end = boundaries.items[middle];
+        const width = measurer.width(text[0..end]);
+        if (width < 0 or !std.math.isFinite(width)) return error.InvalidMeasurement;
+        if (width <= target_width) {
+            best = .{ .end = end, .width = width };
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    if (best) |result| return result;
+    const first_end = boundaries.items[0];
+    const first_width = measurer.width(text[0..first_end]);
+    if (first_width < 0 or !std.math.isFinite(first_width)) return error.InvalidMeasurement;
+    return .{ .end = first_end, .width = first_width };
+}
+
+fn nextUtf8Boundary(text: []const u8, start: usize) usize {
+    const sequence_len = std.unicode.utf8ByteSequenceLength(text[start]) catch 1;
+    return @min(text.len, start + @as(usize, @intCast(sequence_len)));
+}
+
+fn isPreferredWrapByte(byte: u8) bool {
+    return switch (byte) {
+        '/', '-', '.', '?', '&', '=', '#', '_', ':', '~', '%', '+' => true,
+        else => false,
+    };
+}
+
+fn interwordGapCount(words: []const Word, prefix: []const usize, start: usize, end: usize) usize {
+    var result = prefix[end] - prefix[start];
+    if (words[start].space_before) result -= 1;
+    return result;
 }
 
 fn monospaceMeasure(_: ?*anyopaque, text: []const u8) f64 {
@@ -456,6 +613,53 @@ test "emergency stretch selects breaks without changing painted width" {
     try std.testing.expectEqual(@as(usize, 2), layout.lines[0].word_end);
     try std.testing.expectApproxEqAbs(@as(f64, 4), layout.lines[0].ratio, 0.000_001);
     try std.testing.expectApproxEqAbs(@as(f64, 7), layout.lines[0].renderedWidth(layout.words), 0.000_001);
+}
+
+test "oversized tokens wrap without inserting spaces" {
+    const allocator = std.testing.allocator;
+    const source = "https://somedomain-idontknow.com/this/that/theotherthing/query/tothewordsyouwanttogo";
+    var layout = try Layout.init(
+        allocator,
+        source,
+        24,
+        .{ .measure_fn = monospaceMeasure },
+        .{},
+    );
+    defer layout.deinit(allocator);
+
+    try std.testing.expect(layout.words.len > 1);
+    try std.testing.expect(layout.lines.len > 1);
+    var reconstructed: std.ArrayList(u8) = .empty;
+    defer reconstructed.deinit(allocator);
+    for (layout.words) |word| {
+        try std.testing.expect(!word.space_before);
+        try reconstructed.appendSlice(allocator, word.text);
+    }
+    try std.testing.expectEqualStrings(source, reconstructed.items);
+    for (layout.lines) |line| {
+        try std.testing.expect(!line.overfull);
+        try std.testing.expect(line.renderedWidth(layout.words) <= line.target_width + 0.000_001);
+    }
+}
+
+test "rescue prefers a ragged break over an overfull final line" {
+    const allocator = std.testing.allocator;
+    const source = "one two aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var layout = try Layout.init(
+        allocator,
+        source,
+        40,
+        .{ .measure_fn = monospaceMeasure },
+        .{},
+    );
+    defer layout.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), layout.lines.len);
+    try std.testing.expect(!layout.lines[0].justified);
+    for (layout.lines) |line| {
+        try std.testing.expect(!line.overfull);
+        try std.testing.expect(line.renderedWidth(layout.words) <= line.target_width + 0.000_001);
+    }
 }
 
 test "whitespace-only paragraphs produce no lines" {

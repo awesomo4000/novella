@@ -110,3 +110,55 @@ test "resizing does not create a chasm between two words" {
     }
     try std.testing.expect(maximum_space <= 6.0 * harfbuzzMeasure(&engine, " "));
 }
+
+test "oversized URL stays inside the sheet at every representative width" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+
+    var engine = try shaping.Engine.init(font_bytes, 18.5);
+    defer engine.deinit();
+
+    const url = "https://somedomain-idontknow.com/this/that/theotherthing/query/tothewordsyouwanttogo";
+    for ([_]f64{ 224.0, 330.0, 498.0 }) |width| {
+        var layout = try novella.Layout.init(
+            allocator,
+            url,
+            width,
+            .{ .context = &engine, .measure_fn = harfbuzzMeasure },
+            .{},
+        );
+        defer layout.deinit(allocator);
+
+        try std.testing.expect(layout.lines.len > 1);
+        for (layout.lines) |line| {
+            try std.testing.expect(!line.overfull);
+            try std.testing.expect(line.renderedWidth(layout.words) <= width + 0.000_001);
+        }
+    }
+}
+
+test "long fitting token moves to a contained ragged line" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+
+    var engine = try shaping.Engine.init(font_bytes, 18.5);
+    defer engine.deinit();
+
+    const paragraph = "OISJd oiajs doija saaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var layout = try novella.Layout.init(
+        allocator,
+        paragraph,
+        498.0,
+        .{ .context = &engine, .measure_fn = harfbuzzMeasure },
+        .{},
+    );
+    defer layout.deinit(allocator);
+
+    try std.testing.expect(layout.lines.len >= 2);
+    for (layout.lines) |line| {
+        try std.testing.expect(!line.overfull);
+        try std.testing.expect(line.renderedWidth(layout.words) <= line.target_width + 0.000_001);
+    }
+}

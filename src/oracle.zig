@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         for (layout.lines, 0..) |line, line_index| {
             if (line_index > 0) try writer.writeByte(0x1f);
             for (layout.words[line.word_start..line.word_end], 0..) |word, word_index| {
-                if (word_index > 0) try writer.writeByte(' ');
+                if (word_index > 0 and word.space_before) try writer.writeByte(' ');
                 try writer.writeAll(word.text);
             }
         }
