@@ -6,14 +6,16 @@
 document alone.**
 
 Novella currently has a renderer-independent justification library, a native
-AppKit/CoreText writing sheet, and a minimal raw-XCB window target. The next
-major body of work is to reproduce the macOS writing experience on X11 without
-introducing GTK, Qt, Xlib, Cairo, a browser runtime, or another widget toolkit.
+AppKit/CoreText writing sheet, a minimal raw-XCB window target, and a minimal
+native Win32 window target. The next major body of work is to reproduce the
+macOS writing experience on X11 and Windows without introducing GTK, Qt,
+Xlib, Cairo, WinUI, WPF, a browser runtime, or another widget toolkit.
 
-The chosen architecture is a single custom-rendered editor with two thin
+The chosen architecture is a single custom-rendered editor with three thin
 platform shells. XCB owns the X11 connection, window, events, and pixel
-presentation. It does not own widgets, typography, document state, editing
-semantics, or page layout.
+presentation. Win32 owns the Windows process, window, events, and native
+presentation. Neither owns widgets, document state, editing semantics, or page
+layout.
 
 ## Goals
 
@@ -25,12 +27,16 @@ semantics, or page layout.
   - Junicode body text;
   - madder-red insertion caret;
   - no sample text, automatic typing, toolbar, or instruction footer.
-- Give macOS and X11 identical document and editing semantics.
-- Keep the justification library usable without either platform backend.
+- Give macOS, X11, and Windows identical document and editing semantics.
+- Shape and measure manuscript text once through shared HarfBuzz code so all
+  three backends receive the same glyph identifiers, advances, clusters, and
+  line-breaking inputs.
+- Keep the justification library usable without any platform backend.
 - Keep the X11 application independent of installed X11 client libraries.
 - Statically link vendored X11-side dependencies.
 - Use the X11 core protocol as the universal presentation fallback.
 - Detect optional extensions at runtime and retain a core-protocol fallback.
+- Keep the Windows application on native Win32 and system graphics/text APIs.
 - Make novel-length editing, viewport scrolling, and paragraph reflow explicit
   architectural responsibilities rather than later platform hacks.
 - Preserve the existing justif differential oracle.
@@ -38,12 +44,15 @@ semantics, or page layout.
 ## Non-goals
 
 - Building a general-purpose widget toolkit.
-- Recreating AppKit classes or APIs on X11.
+- Recreating AppKit classes or APIs on X11 or Windows.
 - Depending on GTK, Qt, Xlib, Xft, Cairo, Electron, or a browser DOM.
+- Depending on WinUI, WPF, .NET, or a packaged application runtime.
 - Using X core fonts for manuscript rendering.
-- Pixel-identical text rasterization between CoreText and FreeType.
+- Pixel-identical glyph rasterization among the native macOS and Windows
+  drawing paths and FreeType.
 - Supporting every historical X11 visual in the first implementation.
-- Implementing full XIM/CJK input in the first input milestone.
+- Implementing full XIM or Windows IME/preedit support in the first input
+  milestone.
 - Adding menus, toolbars, document chrome, or visible keyboard instructions.
 - Replacing the line-breaking algorithm or expanding its current feature set.
 
@@ -64,10 +73,24 @@ ReleaseSmall executable contains XCB and Xau and dynamically links only the
 macOS system runtime. This proves the build and connection boundary, not the
 editor architecture.
 
+Commit `338f78a`, merged by `cb338f8`, adds the corresponding Windows
+bootstrap:
+
+- `src/platform/windows/main.zig`: Unicode Win32 application and message loop;
+- `src/platform/windows/win32.zig`: isolated Windows header import;
+- `src/platform/windows/novella.manifest`: Windows 10 compatibility and
+  per-monitor-v2 DPI declaration with a per-monitor fallback;
+- native `windows` and `run-windows` build steps.
+
+The bootstrap creates, paints, resizes, and closes a native window. It proves
+the Windows target, Unicode, DPI, and lifecycle boundary; it deliberately does
+not yet import the shared editor or render the writing sheet.
+
 ## Architectural decision
 
-Use a shared editor and sheet renderer above platform-specific window, input,
-text, and presentation adapters:
+Use a shared editor, HarfBuzz text engine, and sheet renderer above
+platform-specific window, input, glyph-rasterization, and presentation
+adapters:
 
 ```text
 Native event
@@ -83,23 +106,29 @@ Platform adapter -----> Command
                    viewport adjustment
                            |
                            v
-                    Shared Sheet
-                   geometry + layout
+              Shared Layout + HarfBuzz
+               shaping + measurement
                            |
-             +-------------+-------------+
-             |                           |
-             v                           v
-      macOS text/canvas            X11 text/canvas
-      CoreText/CoreGraphics        HarfBuzz/FreeType
-             |                     CPU pixel surface
-             v                           |
-          NSView                         v
+                           v
+                    Shared Sheet
+                  geometry + glyph runs
+                           |
+             +-------------+-------------+-------------+
+             |                           |             |
+             v                           v             v
+        macOS canvas                 X11 canvas      Windows canvas
+   CoreText/CoreGraphics              FreeType     DirectWrite/Direct2D
+             |                     CPU pixel surface  |
+             v                           |             v
+          NSView                         v           HWND
                                    XCB presenter
 ```
 
 Platform input code must never mutate document bytes directly. Platform
 rendering code must never decide editing behavior. Shared editor code must not
-import AppKit, CoreText, XCB, FreeType, HarfBuzz, or xkbcommon.
+import AppKit, CoreText, XCB, FreeType, xkbcommon, Win32, DirectWrite, or
+Direct2D. HarfBuzz is isolated behind the shared text-engine module; document,
+command, editor, and sheet modules do not call it directly.
 
 ## Proposed source organization
 
@@ -115,15 +144,15 @@ src/
     layout.zig         paragraph layout, caret rows, cache invalidation
     sheet.zig          shared page geometry, colors, and viewport
     canvas.zig         renderer-facing drawing contract
-    text_engine.zig    shaping, measuring, and glyph-run contract
+    text_engine.zig    HarfBuzz shaping, measurement, clusters, glyph runs
     font_data.zig      Junicode decompression and validation
 
   platform/
     macos/
       main.zig
       appkit.zig       application, window, menu, native events
-      coretext.zig     shaping, measurement, cluster mapping
-      canvas.zig       CoreGraphics implementation
+      coretext.zig     font face and positioned-glyph drawing
+      canvas.zig       CoreGraphics canvas implementation
 
     x11/
       main.zig
@@ -134,18 +163,27 @@ src/
       surface.zig      premultiplied client-side pixel buffer
       presenter.zig    core PutImage and optional SHM path
       freetype.zig     face loading and glyph rasterization
-      harfbuzz.zig     shaping and source-cluster mapping
+
+    windows/
+      main.zig         process entry point and application lifetime
+      win32.zig        narrow Windows API import boundary
+      window.zig       class, HWND lifecycle, DPI, resize, close
+      input.zig        messages to normalized commands and UTF-8
+      directwrite.zig  memory font face and positioned-glyph drawing
+      canvas.zig       Direct2D canvas and HWND presentation
+      novella.manifest Windows compatibility and DPI metadata
 
 build/
   macos.zig            AppKit/CoreText/CoreGraphics target wiring
   x11.zig              X11 target and static dependency wiring
+  windows.zig          Win32/DirectWrite/Direct2D target wiring
   vendor.zig           vendored-library construction helpers
 
 vendor/
   xcb/
   xau/
   freetype/            proposed, not yet vendored
-  harfbuzz/            proposed, not yet vendored
+  harfbuzz/            pinned shared OpenType shaper
   xkbcommon/           proposed, not yet vendored
 ```
 
@@ -154,18 +192,19 @@ its own module. The dependency direction may not be reversed.
 
 ## Responsibility map
 
-| Responsibility | Shared | macOS | X11 |
-|---|---|---|---|
-| Document bytes and cursor | `Document`/`Editor` | — | — |
-| Editing semantics | `Command` handling | Event translation | Event translation |
-| Paragraph justification | `Layout` | — | — |
-| Sheet geometry and colors | `Sheet` | — | — |
-| Scrolling and caret visibility | `Editor`/`Sheet` | — | — |
-| Text-engine contract | Interface | CoreText | HarfBuzz + FreeType |
-| Glyph rasterization | Interface | CoreText | FreeType |
-| Drawing primitives | Canvas contract | CoreGraphics | CPU surface |
-| Window lifecycle | — | AppKit | XCB + ICCCM/EWMH |
-| Pixel presentation | — | `NSView` drawing | XCB PutImage/SHM |
+| Responsibility | Shared | macOS | X11 | Windows |
+|---|---|---|---|---|
+| Document bytes and cursor | `Document`/`Editor` | — | — | — |
+| Editing semantics | `Command` handling | Event translation | Event translation | Event translation |
+| Paragraph justification | `Layout` | — | — | — |
+| Sheet geometry and colors | `Sheet` | — | — | — |
+| Scrolling and caret visibility | `Editor`/`Sheet` | — | — | — |
+| Text shaping and measurement | HarfBuzz | — | — | — |
+| Source clusters and caret stops | HarfBuzz + layout | — | — | — |
+| Glyph rasterization | Interface | CoreText/CoreGraphics | FreeType | DirectWrite/Direct2D |
+| Drawing primitives | Canvas contract | CoreGraphics | CPU surface | Direct2D |
+| Window lifecycle | — | AppKit | XCB + ICCCM/EWMH | Win32 |
+| Pixel presentation | — | `NSView` drawing | XCB PutImage/SHM | Direct2D HWND target |
 
 ## Shared command model
 
@@ -220,7 +259,7 @@ The shared document owns:
 A gap buffer is sufficient for the first shared implementation. A piece table
 or rope is deferred until measurement demonstrates that the gap buffer is a
 problem. Storage must be hidden behind the document API so that transition
-does not affect either platform.
+does not affect any platform.
 
 Editing positions remain UTF-8 byte offsets at the justification boundary, but
 user-visible cursor stops come from text clusters. A combining sequence or
@@ -249,7 +288,7 @@ Scrolling alone must not re-run justification.
 The shared layout layer is responsible for:
 
 - splitting text into paragraphs;
-- requesting text metrics from the active text engine;
+- requesting text metrics from the shared HarfBuzz text engine;
 - invoking `justify.Layout`;
 - positioning lines and inter-word spaces;
 - computing visual caret rows;
@@ -292,7 +331,7 @@ strokeRect(rect, width, color)
 drawShadow(rect, offset, blur, color)
 pushClip(rect)
 popClip()
-drawGlyphRun(run, origin, color)
+drawGlyphRun(pre_shaped_run, origin, color)
 endFrame()
 ```
 
@@ -300,16 +339,25 @@ The contract is conceptual. Zig compile-time composition is preferred over a
 heap-allocated runtime vtable unless runtime backend switching becomes a real
 requirement.
 
-The CoreGraphics and software implementations must blend the same color values
-and consume the same sheet geometry. Text rasterization is allowed to differ
-slightly because CoreText and FreeType hint and rasterize independently.
+The CoreGraphics, software, and Direct2D implementations must blend the same
+color values, consume the same sheet geometry, and draw the same pre-shaped
+glyph identifiers at the same logical positions. Glyph pixels are allowed to
+differ slightly because the platform rasterizers hint, antialias, and composite
+independently.
 
 ## Text-engine contract
 
-Measurement and drawing must consume the same shaping result. Measuring raw
-Unicode strings in one path and independently drawing characters in another
-will eventually disagree on ligatures, kerning, combining marks, or complex
-scripts.
+HarfBuzz is the single shaping and manuscript-measurement implementation for
+macOS, X11, and Windows. Measuring raw Unicode strings in one path and asking a
+platform text-layout API to shape them independently in another would disagree
+eventually on ligatures, kerning, combining marks, complex scripts, or caret
+clusters, and is prohibited for manuscript text.
+
+HarfBuzz is an application-layer dependency, not a dependency of
+`src/justify.zig`. The public renderer-independent justification API keeps its
+measurement callback and can still be imported without HarfBuzz. The shared
+Novella application supplies a HarfBuzz-backed callback through
+`app/text_engine.zig`.
 
 A shaped run conceptually contains:
 
@@ -324,17 +372,33 @@ The text engine must provide:
 
 - word/run measurement for `justify.Layout`;
 - shaping with source clusters;
-- glyph-run rendering through the platform canvas;
+- immutable positioned glyph runs for the platform canvas;
 - caret stops derived from clusters;
 - stable behavior for the same font bytes, size, and scale.
 
-HarfBuzz is required before X11 text parity is declared complete. FreeType-only
-character lookup plus kerning may be used as a bring-up step, but it is not the
-finished text architecture.
+The shared wrapper configures HarfBuzz explicitly and identically for every
+target: OpenType font functions, face index, variation coordinates, size,
+direction, script, language, cluster level, and feature set. Platform defaults
+must not silently alter those inputs. HarfBuzz converts Unicode runs into
+positioned glyphs and preserves cluster relationships to source text. Those
+clusters are also the authoritative foundation for safe cursor movement and
+later selection behavior.
 
-HarfBuzz converts Unicode runs into positioned glyphs and preserves cluster
-relationships to source text. Those clusters are also the correct foundation
-for safe cursor movement and later selection behavior.
+Each backend receives that already-shaped run and may only rasterize and
+present it:
+
+- macOS maps the shared font to a `CTFont`/`CGFont` and draws explicit glyph
+  identifiers and positions; it does not use `CTLine` to reshape the text;
+- X11 loads those glyph identifiers through FreeType and blends their coverage
+  into the software surface;
+- Windows maps the shared font to an `IDWriteFontFace` and submits explicit
+  glyph indices, advances, and offsets to the DirectWrite/Direct2D glyph-run
+  drawing path; it does not use `IDWriteTextLayout` to reshape the text.
+
+All justification widths come from HarfBuzz advances before rasterization.
+Conversion from HarfBuzz font units to logical coordinates and any subpixel
+rounding policy are shared and deterministic. A backend must not replace those
+advances with hinted raster bounds.
 
 ## Shared font data
 
@@ -348,12 +412,16 @@ That module owns:
 - XZ checksum enforcement;
 - SFNT signature validation;
 - allocator-owned decompressed bytes;
-- an explicit lifetime suitable for both CoreText and FreeType.
+- HarfBuzz blob, face, and font creation from those bytes;
+- an explicit lifetime suitable for HarfBuzz and every platform rasterizer.
 
-The macOS backend creates its graphics font from the shared bytes. The X11
-backend creates a FreeType memory face from the same bytes. Neither backend
-searches the host for Junicode, and Fontconfig is not needed for the primary
-manuscript face.
+The shared HarfBuzz face is authoritative for glyph identifiers and metrics.
+The macOS backend creates its graphics font from the same bytes, the X11 backend
+creates a FreeType memory face from them, and the Windows backend exposes them
+to DirectWrite through a private in-memory font collection. These platform
+faces exist only to rasterize the HarfBuzz-selected glyphs. No backend searches
+the host for Junicode, and Fontconfig is not needed for the primary manuscript
+face.
 
 ## X11 rendering architecture
 
@@ -362,7 +430,7 @@ manuscript text.
 
 The finished X11 rendering path is:
 
-1. Shape UTF-8 through HarfBuzz.
+1. Receive the shared HarfBuzz glyph run and logical positions.
 2. Load and rasterize shaped glyph identifiers through FreeType.
 3. Receive grayscale glyph coverage bitmaps.
 4. Blend coverage into a client-owned premultiplied RGBA surface.
@@ -457,16 +525,18 @@ of AppKit's text-input services.
 
 ## macOS backend after extraction
 
-The macOS application remains native AppKit. The refactor must not replace
-CoreText or CoreGraphics merely to force identical platform internals.
+The macOS application remains native AppKit. CoreText/CoreGraphics remain the
+font-face, glyph-rasterization, drawing, and presentation path, but HarfBuzz
+replaces CoreText as the authority for manuscript shaping and measurement.
 
 The macOS backend retains responsibility for:
 
 - `NSApplication`, menus, window, and responder integration;
 - Command-Q and normal application termination;
 - conversion of AppKit events to shared commands;
-- CoreText shaping and metrics;
-- CoreGraphics drawing;
+- construction of the CoreText/CoreGraphics font face from shared bytes;
+- drawing the explicit HarfBuzz glyph identifiers and positions;
+- CoreGraphics drawing and presentation;
 - device scale from the native window/screen.
 
 It gives up responsibility for:
@@ -477,11 +547,57 @@ It gives up responsibility for:
 - Return and deletion behavior;
 - sheet geometry and visual constants;
 - scroll policy;
-- font decompression and validation.
+- font decompression and validation;
+- manuscript shaping, advances, clusters, and caret stops.
 
 The macOS application is the behavioral reference during extraction. Each
-shared-module move must preserve its visible result before the X11 backend
-begins consuming that module.
+shared-module move must preserve its visible result before the X11 and Windows
+backends begin consuming that module.
+
+## Windows backend after extraction
+
+The Windows application remains a native Unicode Win32 program. Win32 is the
+window and event boundary, not a second editor implementation. DirectWrite
+provides the raster font face and explicit glyph-run drawing, while Direct2D
+implements the canvas and presents into the `HWND`; these are operating-system
+APIs rather than widget frameworks. HarfBuzz remains the text engine.
+
+The Windows backend retains responsibility for:
+
+- process entry, window-class registration, `HWND`, and message-loop lifetime;
+- close, paint, size, focus, and per-monitor-DPI messages;
+- conversion of Windows keyboard and text-input messages to shared commands;
+- private DirectWrite font loading and drawing of positioned HarfBuzz glyphs;
+- Direct2D drawing and device-resource recreation;
+- conversion between logical units and the current window DPI.
+
+It must turn client-size or DPI changes into shared `Resize` commands. It must
+not use frame size as the editor viewport, and a `WM_DPICHANGED` transition must
+update both the native window bounds and shared logical scale before repaint.
+
+It gives up the same application responsibilities as the macOS backend:
+
+- document storage and cursor mutation;
+- paragraph splitting, Return, deletion, and navigation behavior;
+- sheet geometry, visual constants, and scroll policy;
+- font decompression and validation;
+- manuscript shaping, advances, clusters, and caret stops.
+
+The current `main.zig` may keep window creation and painting together while it
+is only a bootstrap. Split `window.zig`, `input.zig`, `directwrite.zig`, and
+`canvas.zig` when those responsibilities acquire real implementations; do not
+create forwarding-only modules merely to match the proposed tree.
+
+The application manifest remains part of the executable contract. The minimum
+supported system is Windows 10 version 1607, the Win32 API is Unicode-only, and
+per-monitor-v2 DPI behavior with a per-monitor fallback must remain declared or
+be explicitly established before any window is created.
+
+The minimum-version contract also governs in-memory font loading. The
+Windows-10-Creators-Update `IDWriteInMemoryFontFileLoader` convenience API is
+too new for version 1607. Use the older custom font-file and font-collection
+loader interfaces available on the supported baseline, or explicitly raise the
+minimum Windows version in a later specification.
 
 ## Dependency policy
 
@@ -489,13 +605,18 @@ begins consuming that module.
 
 - libxcb 1.17.0: vendored core, static;
 - libXau 1.0.12: vendored minimal MIT-MAGIC-COOKIE path, static;
+- HarfBuzz 14.2.1: vendored minimal OpenType core, statically linked into the
+  macOS application as the first shared-shaping integration;
 - Zig standard-library XZ decompressor;
 - macOS system frameworks only in the macOS target.
+- Windows system APIs only in the Windows target; the bootstrap currently
+  imports Win32 headers through Zig's MinGW-compatible libc environment.
 
-### Proposed
+### Proposed or not yet connected on every backend
 
-- FreeType: statically linked minimal TrueType/OpenType configuration;
-- HarfBuzz: statically linked minimal shaping configuration;
+- the existing pinned HarfBuzz configuration linked into the X11 and Windows
+  application targets;
+- FreeType: statically linked minimal TrueType/OpenType rasterization for X11;
 - xkbcommon: statically linked keyboard and Compose support;
 - generated core files for the XKB and optional SHM XCB extensions as needed.
 
@@ -512,11 +633,23 @@ vendoring change must record:
 - dynamic-link audit proving no accidental system X11 dependency.
 
 Do not add Fontconfig for the embedded manuscript face. Do not enable optional
-FreeType/HarfBuzz dependencies without a concrete feature requirement.
+FreeType dependencies without a concrete feature requirement. HarfBuzz
+integrations such as GLib, ICU, CoreText, and DirectWrite remain disabled;
+shared shaping uses the pinned built-in Unicode-data and OpenType configuration
+so its behavior does not vary with the host platform.
 
 On macOS, system calls, sockets, pthreads, and libc remain provided by dynamic
 `libSystem`; Apple does not provide a fully static application runtime. The
 requirement is that all non-system X11 client components are static.
+
+On Windows, `USER32`, `KERNEL32`, DirectWrite, Direct2D, and other documented
+Windows system components may be dynamic. No GTK, Qt, WinUI, WPF, .NET, or
+third-party GUI runtime is introduced. The final dependency audit must list
+both direct DLL imports and API-set imports. The current `@cImport` approach
+requires libc headers and introduces Universal CRT imports; retain that choice
+only if the convenience is worth the runtime surface, or replace the narrow
+Win32 declarations with maintained Zig declarations before minimal dependency
+closure is claimed.
 
 ## Build organization
 
@@ -528,21 +661,30 @@ Required user-facing steps:
 ```text
 zig build test          shared library and editor tests only
 zig build oracle        justif differential oracle
-zig build               native macOS executable on macOS
-zig build run           native macOS application on macOS
+zig build               native executable on macOS or Windows
+zig build run           native application on macOS or Windows
+zig build windows       native or cross-targeted Windows executable
+zig build run-windows   run the Windows executable on Windows
 zig build x11           static-X11 executable
 zig build run-x11       run the X11 executable using DISPLAY
 ```
 
 Properties:
 
-- shared tests do not compile AppKit or X11 code;
+- shared tests do not compile AppKit, X11, or Win32 code;
 - macOS framework links exist only in macOS target construction;
+- Windows system-library links and the application manifest exist only in
+  Windows target construction;
 - X11 C libraries are built only when an X11 artifact needs them;
+- the same pinned HarfBuzz configuration is built statically for macOS, X11,
+  and Windows;
 - the X11 module has no `/opt/X11`, Homebrew, or system X11 include/library
   path;
 - `otool -L` on macOS shows no dynamic XCB/Xau/FreeType/HarfBuzz/xkbcommon;
-- non-macOS X11 cross-targets do not instantiate the AppKit build graph.
+- Windows PE import inspection records all system and Universal CRT imports and
+  confirms that HarfBuzz is not a dynamic dependency;
+- non-macOS targets do not instantiate the AppKit build graph, and non-Windows
+  targets do not instantiate the Win32 build graph.
 
 The `specs/` directory is repository design material and does not need to be
 included in the downstream Zig package unless a later packaging decision says
@@ -574,7 +716,9 @@ Clipboard is deliberately after the first editor-parity milestone.
 The eventual X11 implementation must handle `CLIPBOARD`, preferably `PRIMARY`,
 `TARGETS`, `UTF8_STRING`, selection ownership, conversion requests, and INCR
 transfers for large selections. This belongs in an isolated `selection.zig`
-module and must not leak X atoms into the shared editor.
+module and must not leak X atoms into the shared editor. The Windows adapter
+uses the native Unicode clipboard and likewise keeps handles and clipboard
+messages outside the shared editor.
 
 The shared editor will eventually own a logical selection range and commands
 such as copy, cut, paste, extend-left, and extend-right. No selection UI is
@@ -610,6 +754,11 @@ not crash or hang.
 
 ### Shared unit tests
 
+- deterministic HarfBuzz glyph identifiers, advances, offsets, and clusters
+  for pinned Junicode fixtures;
+- identical HarfBuzz shaping fixtures on macOS, X11, and Windows targets;
+- proof that the platform canvas receives the shared positioned run without
+  reshaping or substituting advances;
 - UTF-8 insertion and deletion;
 - paragraph splitting and joining;
 - repeated trailing Returns and one-at-a-time Backspace;
@@ -650,6 +799,18 @@ not crash or hang.
 - manually smoke-test XQuartz and at least one Linux X server;
 - audit final dynamic dependencies.
 
+### Windows integration tests
+
+- cross-compile the supported x86-64 and ARM64 Windows targets;
+- create, show, paint, resize, change DPI, and close a window on Windows;
+- verify client-size and DPI messages produce normalized shared resize state;
+- verify device-resource loss recreates the Direct2D target without losing the
+  document;
+- pass text, navigation, deletion, Return, and quit through the Win32 adapter;
+- verify blank startup and native close behavior;
+- inspect PE imports and record the intended Windows runtime dependencies;
+- manually smoke-test at 100%, 150%, and mixed-monitor DPI scales.
+
 Security-style path or sandbox tests, if added, must use dedicated disposable
 paths under `/tmp/` and never target system or user files.
 
@@ -660,53 +821,71 @@ paths under `/tmp/` and never target system or user files.
 - Introduce commands, document, and editor modules.
 - Move all text mutation and cursor semantics out of AppKit callbacks.
 - Preserve the macOS appearance and behavior.
+- Keep the Win32 and X11 bootstrap lifecycle behavior stable.
 - Add focused tests for the previously observed trailing-Return bug.
 
-Exit gate: macOS behavior unchanged; shared tests own editing semantics.
+Exit gate: macOS behavior is unchanged, both bootstrap windows remain stable,
+and shared tests own editing semantics.
 
 ### `00-01` — shared sheet and font-data extraction
 
 - Move geometry, colors, viewport, and font decompression into shared modules.
-- Introduce canvas and text-engine contracts.
+- Introduce canvas and HarfBuzz text-engine contracts.
 - Adapt CoreText/CoreGraphics to those contracts.
+- Make the contracts available to both the X11 and Windows backends without
+  importing either platform API into shared code.
 
 Exit gate: macOS still renders the same blank sheet and manuscript without
 platform-owned layout constants.
 
-### `00-02` — X11 software surface and window lifecycle
+### `00-02` — platform surfaces and window lifecycle
 
 - Split the sample into connection, window, surface, presenter, and atom
   modules.
-- Draw the paper and caret without text.
-- Add Expose, resize, `WM_DELETE_WINDOW`, and visual conversion.
+- Split the Win32 bootstrap when window, input, and canvas responsibilities
+  become substantive.
+- Draw the paper and caret without text on X11 and Windows.
+- Add X11 Expose, resize, `WM_DELETE_WINDOW`, and visual conversion.
+- Add Win32 paint, client resize, per-monitor DPI, close, and Direct2D resource
+  recreation.
 - Keep core PutImage as the only required presenter.
 
-Exit gate: repeated expose/resize/close cycles are stable on Xvfb and XQuartz.
+Exit gate: repeated expose/resize/close cycles are stable on Xvfb, XQuartz, and
+Windows, including a Windows DPI transition.
 
-### `00-03` — FreeType and HarfBuzz text
+### `00-03` — shared shaping and platform glyph rasterizers
 
-- Vendor pinned minimal FreeType and HarfBuzz sources.
+- Vendor pinned minimal HarfBuzz for all application targets and FreeType for
+  X11.
 - Load the shared Junicode bytes from memory.
-- Shape, measure, rasterize, cache, blend, and present glyph runs.
-- Connect X11 measurement to `justify.Layout`.
+- Shape and measure every manuscript run through the shared HarfBuzz module.
+- Adapt macOS, X11, and Windows canvases to consume the exact shared glyph
+  identifiers, advances, offsets, and clusters without reshaping.
+- Rasterize, cache, blend, and present X11 glyph runs through FreeType.
+- Load the same bytes through a private DirectWrite font collection.
+- Connect the HarfBuzz measurement callback to `justify.Layout` for every
+  application target.
 
-Exit gate: X11 displays justified Junicode paragraphs with correct line and
-caret geometry; static-link audit passes.
+Exit gate: X11 and Windows display justified Junicode paragraphs with correct
+line and caret geometry, macOS remains visually stable, all three record the
+same shaped-run fixtures, and X11 static-link and Windows PE-import audits pass.
 
-### `00-04` — X11 input parity
+### `00-04` — platform input parity
 
 - Vendor and integrate minimal xkbcommon/XKB support.
-- Translate text, Compose, navigation, deletion, Return, and quit commands.
-- Track focus and keymap changes.
+- Translate X11 text, Compose, navigation, deletion, Return, and quit commands.
+- Translate Win32 keyboard and Unicode text-input messages to the same command
+  set without leaking virtual-key values into shared code.
+- Track focus and keyboard-layout changes on both platforms.
 
-Exit gate: the shared editor input suite passes through both platform adapters,
-and manual XQuartz typing matches macOS semantics.
+Exit gate: the shared editor input suite passes through all three platform
+adapters, and manual XQuartz and Windows typing match macOS semantics.
 
 ### `00-05` — novel-length viewport and performance
 
 - Add dynamic document storage, paragraph caches, visible-run rasterization,
   and caret-following scroll.
-- Measure reflow and rendering on long manuscripts.
+- Measure reflow and rendering on long manuscripts on all three backends.
 - Add dirty-rectangle and optional SHM presentation only after profiling.
 
 Exit gate: sustained typing and navigation remain responsive on a realistic
@@ -715,7 +894,8 @@ novel-sized UTF-8 file without clipping the active caret.
 ### `00-06` — selection, clipboard, and hardening
 
 - Specify and implement selection commands and visuals.
-- Add X11 clipboard protocol and native macOS clipboard integration.
+- Add X11 clipboard protocol plus native macOS and Windows clipboard
+  integration.
 - Expand server, visual, keyboard-layout, and failure-mode coverage.
 
 Exit gate: cross-platform copy/paste and selection are correct, and every
@@ -732,22 +912,32 @@ The architecture is complete when:
 - `src/justify.zig` and shared editor tests compile without platform libraries;
 - no platform event handler mutates document bytes directly;
 - no platform renderer owns sheet layout constants;
+- every application target shapes and measures manuscript text through the
+  same pinned HarfBuzz implementation and configuration;
+- platform canvases rasterize shared glyph runs without invoking a second text
+  layout or shaping pass;
 - macOS behavior remains stable through the extraction;
+- Windows starts blank and reproduces the paper, Junicode text, justification,
+  caret, Return, deletion, arrows, DPI-aware resize, scrolling, and clean close;
 - X11 starts blank and reproduces the paper, Junicode text, justification,
   caret, Return, deletion, arrows, resize, scrolling, and clean close;
+- Windows uses native Win32, DirectWrite, and Direct2D without a widget or
+  managed runtime;
 - X11 uses no GTK, Qt, Xlib, Xft, Cairo, or browser runtime;
 - X11 has a tested core-protocol presentation path;
 - all non-system X11 client dependencies are vendored and static;
-- `zig build test`, `zig build oracle`, both platform builds, integration
+- `zig build test`, `zig build oracle`, all three platform builds, integration
   tests, and dynamic-link audits pass;
 - license and provenance documentation covers every vendored source and
   generated protocol file.
 
 ## Risks
 
-- **Text metrics differ across platforms.** Shared font bytes and dimensions
-  limit divergence, but CoreText and FreeType may choose different hinting.
-  Behavioral parity is required; pixel identity is not.
+- **Glyph pixels differ across platforms.** Shared HarfBuzz shaping makes glyph
+  selection, advances, clusters, and line-breaking inputs deterministic, but
+  CoreText/CoreGraphics, FreeType, and DirectWrite/Direct2D may hint and
+  antialias outlines differently. Layout parity is required; pixel identity is
+  not.
 - **Shaping and caret boundaries are easy to split incorrectly.** Shaped source
   clusters, not raw code-point stepping, must be authoritative.
 - **PutImage can be expensive over remote X.** Correct full-frame core
@@ -755,9 +945,13 @@ The architecture is complete when:
 - **X11 visuals vary.** Native pixel conversion must inspect the server, and
   unsupported historical visuals must fail clearly until implemented.
 - **Keyboard handling can grow into an input-method subsystem.** xkbcommon and
-  Compose are in scope; full XIM is separately specified.
+  Compose are in scope on X11, and Unicode Win32 messages are in scope on
+  Windows; full XIM and Windows IME/preedit are separately specified.
+- **Windows device and DPI state can change independently of document state.**
+  Direct2D resources must be disposable and recreatable, while normalized
+  resize and scale changes remain explicit shared commands.
 - **Premature abstraction can obscure the small application.** Contracts stay
-  narrow and are justified by two concrete backends.
+  narrow and are justified by three concrete backends.
 - **Vendored libraries can dominate source and binary size.** Minimal feature
   configurations and link audits are mandatory for each addition.
 
@@ -775,10 +969,19 @@ The architecture is complete when:
   <https://harfbuzz.github.io/harfbuzz-hb-buffer.html>
 - xkbcommon Compose support:
   <https://xkbcommon.org/doc/current/group__compose.html>
+- Microsoft, *Custom Font Collections (Windows 7/8)*:
+  <https://learn.microsoft.com/windows/win32/directwrite/custom-font-collections>
+- Microsoft, *Text Rendering with Direct2D and DirectWrite*:
+  <https://learn.microsoft.com/windows/win32/direct2d/direct2d-and-directwrite>
+- Microsoft, *Setting the default DPI awareness for a process*:
+  <https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process>
 
 ## Estimate
 
 This is a multi-phase XL body of work. `00-00` and `00-01` should be completed
-before any attempt to make the X11 sample render manuscript text. FreeType,
-HarfBuzz, and xkbcommon vendoring each require their own dependency audit and
-should not be hidden inside an otherwise unrelated phase.
+before either bootstrap renders manuscript text. HarfBuzz has completed its
+initial vendoring audit and macOS integration; connecting that same build to
+X11 and Windows remains part of `00-03`. FreeType and xkbcommon vendoring each
+require their own dependency audit and should not be hidden inside an otherwise
+unrelated phase. DirectWrite and Direct2D require a separate Windows API and
+import audit even though they are system components.

@@ -19,16 +19,79 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const test_step = b.step("test", "Run the justification and shared application tests");
 
     if (target.result.os.tag == .macos) {
+        const harfbuzz = b.addLibrary(.{
+            .name = "harfbuzz-vendored",
+            .linkage = .static,
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        harfbuzz.root_module.link_libc = true;
+        harfbuzz.root_module.link_libcpp = true;
+        harfbuzz.root_module.addIncludePath(b.path("vendor/harfbuzz/src"));
+        harfbuzz.root_module.addCSourceFile(.{
+            .file = b.path("vendor/harfbuzz/src/harfbuzz.cc"),
+            .flags = &.{
+                "-std=c++17",
+                "-fno-exceptions",
+                "-fno-rtti",
+                "-fvisibility=hidden",
+                "-DHB_NO_AAT",
+                "-DHB_NO_BITMAP",
+                "-DHB_NO_COLOR",
+                "-DHB_NO_DRAW",
+                "-DHB_NO_GETENV",
+                "-DHB_NO_MATH",
+                "-DHB_NO_META",
+                "-DHB_NO_PAINT",
+                "-DHB_NO_SETLOCALE",
+                "-DHB_NO_STYLE",
+            },
+        });
+
+        const text_engine = b.createModule(.{
+            .root_source_file = b.path("src/app/text_engine.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        text_engine.addIncludePath(b.path("vendor/harfbuzz/src"));
+        text_engine.linkLibrary(harfbuzz);
+
+        const font_data = b.createModule(.{
+            .root_source_file = b.path("src/app/font_data.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        font_data.addAnonymousImport("junicode_font", .{
+            .root_source_file = b.path("src/assets/junicode.zig"),
+        });
+
+        const text_engine_test_module = b.createModule(.{
+            .root_source_file = b.path("src/app/text_engine_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "text_engine", .module = text_engine },
+                .{ .name = "font_data", .module = font_data },
+            },
+        });
+        const text_engine_tests = b.addTest(.{ .root_module = text_engine_test_module });
+        const run_text_engine_tests = b.addRunArtifact(text_engine_tests);
+        test_step.dependOn(&run_text_engine_tests.step);
+
         const macos_module = b.createModule(.{
             .root_source_file = b.path("src/platform/macos.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "novella", .module = novella }},
-        });
-        macos_module.addAnonymousImport("junicode_font", .{
-            .root_source_file = b.path("src/assets/junicode.zig"),
+            .imports = &.{
+                .{ .name = "novella", .module = novella },
+                .{ .name = "text_engine", .module = text_engine },
+                .{ .name = "font_data", .module = font_data },
+            },
         });
         macos_module.linkFramework("AppKit", .{});
         macos_module.linkFramework("CoreFoundation", .{});
@@ -149,7 +212,6 @@ pub fn build(b: *std.Build) void {
 
     const module_tests = b.addTest(.{ .root_module = novella });
     const run_tests = b.addRunArtifact(module_tests);
-    const test_step = b.step("test", "Run the justification library tests");
     test_step.dependOn(&run_tests.step);
 
     const oracle_module = b.createModule(.{

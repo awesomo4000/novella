@@ -1,4 +1,12 @@
-# Vendored X11 components
+# Vendored components
+
+## HarfBuzz
+
+Novella compiles a pinned minimal HarfBuzz core statically for deterministic
+manuscript shaping and measurement. See `harfbuzz/README.novella.md` for its
+version, checksum, build configuration, sizes, and license.
+
+## X11
 
 The X11 sample compiles only the core protocol portion of XCB and the minimal
 Xau authentication path. Both are linked statically; the build does not use

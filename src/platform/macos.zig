@@ -3,7 +3,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const novella = @import("novella");
-const junicode_font = @import("junicode_font");
+const shaping = @import("text_engine");
+const font_data = @import("font_data");
 
 const Obj = ?*anyopaque;
 const Sel = ?*anyopaque;
@@ -23,9 +24,6 @@ extern fn objc_msgSend_stret() void;
 
 extern fn CFDataCreate(allocator: Obj, bytes: [*]const u8, length: isize) Obj;
 extern fn CFStringCreateWithBytes(allocator: Obj, bytes: [*]const u8, length: isize, encoding: u32, external: u8) Obj;
-extern fn CFDictionaryCreateMutable(allocator: Obj, capacity: isize, key_callbacks: Obj, value_callbacks: Obj) Obj;
-extern fn CFDictionarySetValue(dictionary: Obj, key: Obj, value: Obj) void;
-extern fn CFAttributedStringCreate(allocator: Obj, string: Obj, attributes: Obj) Obj;
 extern fn CFRelease(value: Obj) void;
 
 extern fn CGDataProviderCreateWithCFData(data: Obj) Obj;
@@ -43,27 +41,23 @@ extern fn CGContextSetLineWidth(context: Obj, width: f64) void;
 extern fn CGContextFillRect(context: Obj, rect: Rect) void;
 extern fn CGContextStrokeRect(context: Obj, rect: Rect) void;
 extern fn CGContextSetShadowWithColor(context: Obj, offset: Size, blur: f64, color: Obj) void;
-extern fn CGContextSetTextPosition(context: Obj, x: f64, y: f64) void;
 extern fn CGContextSetTextMatrix(context: Obj, transform: AffineTransform) void;
 
 extern fn CTFontCreateWithGraphicsFont(graphics_font: Obj, size: f64, matrix: ?*const AffineTransform, attributes: Obj) Obj;
-extern fn CTLineCreateWithAttributedString(string: Obj) Obj;
-extern fn CTLineGetTypographicBounds(line: Obj, ascent: ?*f64, descent: ?*f64, leading: ?*f64) f64;
-extern fn CTLineDraw(line: Obj, context: Obj) void;
-extern var kCTFontAttributeName: Obj;
+extern fn CTFontDrawGlyphs(font: Obj, glyphs: [*]const u16, positions: [*]const Point, count: usize, context: Obj) void;
 
 const utf8_encoding: u32 = 0x0800_0100;
 const identity = AffineTransform{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 };
 
-const compressed_junicode = junicode_font.compressed;
-const junicode_uncompressed_size = 2_906_772;
 const max_text_bytes = 64 * 1024;
 const line_height = 27.2;
+const body_font_size = 18.5;
 
 const State = struct {
     view: Obj = null,
     body_font: Obj = null,
-    body_attributes: Obj = null,
+    font_bytes: ?[]u8 = null,
+    text_engine: ?shaping.Engine = null,
     typed: [max_text_bytes]u8 = undefined,
     typed_len: usize = 0,
     cursor: usize = 0,
@@ -71,12 +65,45 @@ const State = struct {
     preferred_x_active: bool = false,
     caret_stops: [max_text_bytes + 1]CaretStop = undefined,
     caret_stop_count: usize = 0,
+    document_revision: u64 = 1,
+    caret_revision: u64 = 0,
 };
 
 const CaretStop = struct {
     offset: usize,
     x: f64,
     y: f64,
+};
+
+const CachedRun = struct {
+    source: []const u8,
+    run: shaping.Run,
+};
+
+const FrameShaper = struct {
+    allocator: std.mem.Allocator,
+    engine: *const shaping.Engine,
+    runs: std.ArrayList(CachedRun) = .empty,
+
+    fn deinit(self: *FrameShaper) void {
+        for (self.runs.items) |*entry| entry.run.deinit(self.allocator);
+        self.runs.deinit(self.allocator);
+    }
+
+    fn shape(self: *FrameShaper, source: []const u8) !shaping.Run {
+        for (self.runs.items) |entry| {
+            if (entry.source.ptr == source.ptr and entry.source.len == source.len)
+                return entry.run;
+        }
+
+        const run = try self.engine.shape(self.allocator, source);
+        errdefer {
+            var owned = run;
+            owned.deinit(self.allocator);
+        }
+        try self.runs.append(self.allocator, .{ .source = source, .run = run });
+        return run;
+    }
 };
 
 var app_state: State = .{};
@@ -88,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
     defer sendVoid0(pool, "drain");
 
     try prepareFonts(std.heap.smp_allocator);
+    defer releaseFonts(std.heap.smp_allocator);
     try registerClasses();
 
     const app = send0(objc_getClass("NSApplication"), "sharedApplication");
@@ -114,8 +142,6 @@ pub fn main(init: std.process.Init) !void {
     sendVoidBool(app, "activateIgnoringOtherApps:", 1);
 
     sendVoid0(app, "run");
-
-    releaseFonts();
 }
 
 fn loadInitialText(init: std.process.Init) !bool {
@@ -209,8 +235,8 @@ fn installApplicationMenu(app: Obj) void {
 }
 
 fn prepareFonts(allocator: std.mem.Allocator) !void {
-    const font_bytes = try decompressJunicode(allocator);
-    defer allocator.free(font_bytes);
+    const font_bytes = try font_data.loadJunicode(allocator);
+    errdefer allocator.free(font_bytes);
 
     const data = CFDataCreate(null, font_bytes.ptr, @intCast(font_bytes.len));
     if (data == null) return error.FontDataUnavailable;
@@ -222,45 +248,24 @@ fn prepareFonts(allocator: std.mem.Allocator) !void {
     if (graphics_font == null) return error.FontUnavailable;
     defer CGFontRelease(graphics_font);
 
-    app_state.body_font = CTFontCreateWithGraphicsFont(graphics_font, 18.5, null, null);
+    app_state.body_font = CTFontCreateWithGraphicsFont(graphics_font, body_font_size, null, null);
     if (app_state.body_font == null) return error.FontUnavailable;
+    errdefer {
+        CFRelease(app_state.body_font);
+        app_state.body_font = null;
+    }
 
-    app_state.body_attributes = attributesForFont(app_state.body_font);
-    if (app_state.body_attributes == null) return error.FontAttributesUnavailable;
+    app_state.text_engine = try shaping.Engine.init(font_bytes, body_font_size);
+    app_state.font_bytes = font_bytes;
 }
 
-fn decompressJunicode(allocator: std.mem.Allocator) ![]u8 {
-    var input: std.Io.Reader = .fixed(compressed_junicode);
-    var decompress = std.compress.xz.Decompress.init(&input, allocator, &.{}) catch
-        return error.FontDecompressionFailed;
-    defer decompress.deinit();
-
-    const font_bytes = try allocator.alloc(u8, junicode_uncompressed_size);
-    errdefer allocator.free(font_bytes);
-    decompress.reader.readSliceAll(font_bytes) catch return error.FontDecompressionFailed;
-
-    // Reading through end-of-stream forces XZ footer and checksum validation.
-    var trailing: [1]u8 = undefined;
-    const trailing_len = decompress.reader.readSliceShort(&trailing) catch
-        return error.FontDecompressionFailed;
-    if (trailing_len != 0) return error.UnexpectedFontData;
-
-    // Junicode is a TrueType-flavored SFNT. Reject a valid XZ stream that is
-    // nevertheless not the font payload expected by CoreText.
-    if (!std.mem.eql(u8, font_bytes[0..4], &.{ 0x00, 0x01, 0x00, 0x00 }))
-        return error.UnexpectedFontData;
-    return font_bytes;
-}
-
-fn releaseFonts() void {
-    if (app_state.body_attributes != null) CFRelease(app_state.body_attributes);
+fn releaseFonts(allocator: std.mem.Allocator) void {
+    if (app_state.text_engine) |*engine| engine.deinit();
+    app_state.text_engine = null;
     if (app_state.body_font != null) CFRelease(app_state.body_font);
-}
-
-fn attributesForFont(font: Obj) Obj {
-    const attributes = CFDictionaryCreateMutable(null, 1, null, null);
-    if (attributes != null) CFDictionarySetValue(attributes, kCTFontAttributeName, font);
-    return attributes;
+    app_state.body_font = null;
+    if (app_state.font_bytes) |font_bytes| allocator.free(font_bytes);
+    app_state.font_bytes = null;
 }
 
 fn registerClasses() !void {
@@ -312,9 +317,12 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
 
     CGContextSetRGBFillColor(context, 0.095, 0.095, 0.09, 1);
 
-    var scratch_bytes: [256 * 1024]u8 = undefined;
-    var scratch = std.heap.FixedBufferAllocator.init(&scratch_bytes);
+    var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer scratch.deinit();
     const allocator = scratch.allocator();
+    const engine = if (app_state.text_engine) |*value| value else return;
+    var frame_shaper = FrameShaper{ .allocator = allocator, .engine = engine };
+    defer frame_shaper.deinit();
     const shown = app_state.typed[0..app_state.typed_len];
 
     app_state.caret_stop_count = 0;
@@ -332,7 +340,7 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
                 allocator,
                 paragraph,
                 measure_width,
-                .{ .measure_fn = measureBodyText },
+                .{ .context = &frame_shaper, .measure_fn = measureBodyText },
                 .{},
             ) catch break;
             defer layout.deinit(allocator);
@@ -343,8 +351,9 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
                 const line_words = layout.words[line.word_start..line.word_end];
                 for (line_words, 0..) |word, index| {
                     const word_start = paragraph_start + sliceOffset(paragraph, word.text);
-                    recordWordCaretStops(word.text, word_start, x, baseline);
-                    drawText(context, word.text, x, baseline, app_state.body_attributes);
+                    const run = frame_shaper.shape(word.text) catch return;
+                    recordWordCaretStops(run, word.text.len, word_start, x, baseline);
+                    drawText(context, run, x, baseline, allocator) catch return;
                     x += word.width;
                     if (index + 1 < line_words.len) {
                         const next_word = line_words[index + 1];
@@ -383,10 +392,14 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
         caret_x = position.x;
         caret_y = position.y;
     }
+    app_state.caret_revision = app_state.document_revision;
 
     // The madder-red caret is the only chromatic accent on the sheet.
     CGContextSetRGBFillColor(context, 0.56, 0.17, 0.135, 0.9);
-    const caret = Rect{ .origin = .{ .x = caret_x + 1.2, .y = caret_y - 4.0 }, .size = .{ .width = 1.15, .height = 21.5 } };
+    // `caret_x` is the insertion boundary and therefore also the origin of the
+    // following glyph. Keep the complete caret to its left so the accent never
+    // paints over the character.
+    const caret = Rect{ .origin = .{ .x = caret_x - 1.8, .y = caret_y - 4.0 }, .size = .{ .width = 1.15, .height = 21.5 } };
     CGContextFillRect(context, caret);
 }
 
@@ -407,14 +420,20 @@ fn addCaretStop(offset: usize, x: f64, y: f64) void {
     app_state.caret_stop_count += 1;
 }
 
-fn recordWordCaretStops(word: []const u8, source_start: usize, x: f64, y: f64) void {
+fn recordWordCaretStops(run: shaping.Run, source_len: usize, source_start: usize, x: f64, y: f64) void {
     addCaretStop(source_start, x, y);
-    var byte_index: usize = 0;
-    while (byte_index < word.len) {
-        const sequence_len = std.unicode.utf8ByteSequenceLength(word[byte_index]) catch 1;
-        byte_index = @min(word.len, byte_index + @as(usize, @intCast(sequence_len)));
-        addCaretStop(source_start + byte_index, x + measureBodyText(null, word[0..byte_index]), y);
+    var pen_x: f64 = 0;
+    var previous_cluster: ?u32 = null;
+    for (run.glyphs) |glyph| {
+        if (previous_cluster == null or previous_cluster.? != glyph.cluster) {
+            const cluster: usize = @intCast(glyph.cluster);
+            if (cluster <= source_len)
+                addCaretStop(source_start + cluster, x + pen_x, y);
+            previous_cluster = glyph.cluster;
+        }
+        pen_x += glyph.x_advance;
     }
+    addCaretStop(source_start + source_len, x + run.advance, y);
 }
 
 fn recordGapCaretStops(source: []const u8, start: usize, end: usize, x: f64, y: f64, width: f64) void {
@@ -477,20 +496,20 @@ fn keyDown(self: Obj, _: Sel, event: Obj) callconv(.c) void {
     }
 
     if (key_code == 123) {
-        app_state.cursor = previousCodepoint(app_state.cursor);
+        app_state.cursor = previousCaretBoundary(app_state.cursor);
         app_state.preferred_x_active = false;
     } else if (key_code == 124) {
-        app_state.cursor = nextCodepoint(app_state.cursor);
+        app_state.cursor = nextCaretBoundary(app_state.cursor);
         app_state.preferred_x_active = false;
     } else if (key_code == 126) {
         moveCursorVertically(true);
     } else if (key_code == 125) {
         moveCursorVertically(false);
     } else if (key_code == 51) {
-        if (app_state.cursor > 0) deleteRange(previousCodepoint(app_state.cursor), app_state.cursor);
+        if (app_state.cursor > 0) deleteRange(previousCaretBoundary(app_state.cursor), app_state.cursor);
         app_state.preferred_x_active = false;
     } else if (key_code == 117) {
-        if (app_state.cursor < app_state.typed_len) deleteRange(app_state.cursor, nextCodepoint(app_state.cursor));
+        if (app_state.cursor < app_state.typed_len) deleteRange(app_state.cursor, nextCaretBoundary(app_state.cursor));
         app_state.preferred_x_active = false;
     } else if (key_code == 36 or key_code == 76) {
         insertAtCursor("\n");
@@ -505,6 +524,34 @@ fn keyDown(self: Obj, _: Sel, event: Obj) callconv(.c) void {
         app_state.preferred_x_active = false;
     }
     sendVoidBool(self, "setNeedsDisplay:", 1);
+}
+
+fn previousCaretBoundary(position: usize) usize {
+    if (app_state.caret_revision != app_state.document_revision)
+        return previousCodepoint(position);
+
+    var previous: ?usize = null;
+    var found = false;
+    for (app_state.caret_stops[0..app_state.caret_stop_count]) |stop| {
+        if (stop.offset == position) found = true;
+        if (stop.offset < position and (previous == null or stop.offset > previous.?))
+            previous = stop.offset;
+    }
+    return if (found) previous orelse 0 else previousCodepoint(position);
+}
+
+fn nextCaretBoundary(position: usize) usize {
+    if (app_state.caret_revision != app_state.document_revision)
+        return nextCodepoint(position);
+
+    var next: ?usize = null;
+    var found = false;
+    for (app_state.caret_stops[0..app_state.caret_stop_count]) |stop| {
+        if (stop.offset == position) found = true;
+        if (stop.offset > position and (next == null or stop.offset < next.?))
+            next = stop.offset;
+    }
+    return if (found) next orelse app_state.typed_len else nextCodepoint(position);
 }
 
 fn previousCodepoint(position: usize) usize {
@@ -532,6 +579,7 @@ fn insertAtCursor(bytes: []const u8) void {
     @memcpy(app_state.typed[app_state.cursor .. app_state.cursor + bytes.len], bytes);
     app_state.cursor += bytes.len;
     app_state.typed_len = new_len;
+    app_state.document_revision +%= 1;
 }
 
 fn deleteRange(start: usize, end: usize) void {
@@ -544,6 +592,7 @@ fn deleteRange(start: usize, end: usize) void {
     );
     app_state.typed_len -= count;
     app_state.cursor = start;
+    app_state.document_revision +%= 1;
 }
 
 fn moveCursorVertically(up: bool) void {
@@ -578,31 +627,33 @@ fn moveCursorVertically(up: bool) void {
     if (best) |stop| app_state.cursor = stop.offset;
 }
 
-fn measureBodyText(_: ?*anyopaque, text: []const u8) f64 {
-    const string = makeStringSlice(text);
-    if (string == null) return 0;
-    defer CFRelease(string);
-    const attributed = CFAttributedStringCreate(null, string, app_state.body_attributes);
-    if (attributed == null) return 0;
-    defer CFRelease(attributed);
-    const line = CTLineCreateWithAttributedString(attributed);
-    if (line == null) return 0;
-    defer CFRelease(line);
-    return CTLineGetTypographicBounds(line, null, null, null);
+fn measureBodyText(context: ?*anyopaque, source: []const u8) f64 {
+    const state = context orelse return 0;
+    const shaper: *FrameShaper = @ptrCast(@alignCast(state));
+    const run = shaper.shape(source) catch return 0;
+    return run.advance;
 }
 
-fn drawText(context: Obj, text: []const u8, x: f64, y: f64, attributes: Obj) void {
-    const string = makeStringSlice(text);
-    if (string == null) return;
-    defer CFRelease(string);
-    const attributed = CFAttributedStringCreate(null, string, attributes);
-    if (attributed == null) return;
-    defer CFRelease(attributed);
-    const line = CTLineCreateWithAttributedString(attributed);
-    if (line == null) return;
-    defer CFRelease(line);
-    CGContextSetTextPosition(context, x, y);
-    CTLineDraw(line, context);
+fn drawText(context: Obj, run: shaping.Run, x: f64, y: f64, allocator: std.mem.Allocator) !void {
+    if (run.glyphs.len == 0) return;
+    const glyphs = try allocator.alloc(u16, run.glyphs.len);
+    defer allocator.free(glyphs);
+    const positions = try allocator.alloc(Point, run.glyphs.len);
+    defer allocator.free(positions);
+
+    var pen_x = x;
+    var pen_y = y;
+    for (run.glyphs, 0..) |glyph, index| {
+        if (glyph.id > std.math.maxInt(u16)) return error.GlyphIdentifierTooLarge;
+        glyphs[index] = @intCast(glyph.id);
+        positions[index] = .{
+            .x = pen_x + glyph.x_offset,
+            .y = pen_y + glyph.y_offset,
+        };
+        pen_x += glyph.x_advance;
+        pen_y += glyph.y_advance;
+    }
+    CTFontDrawGlyphs(app_state.body_font, glyphs.ptr, positions.ptr, glyphs.len, context);
 }
 
 fn makeString(comptime text: [:0]const u8) Obj {

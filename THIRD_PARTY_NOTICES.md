@@ -39,6 +39,18 @@ runtime.
 - Licenses: MIT/X11-style; see `vendor/xcb/COPYING`,
   `vendor/xcb/COPYING.xcb-proto`, and `vendor/xau/COPYING`
 
+## HarfBuzz
+
+The macOS application statically compiles the HarfBuzz 14.2.1 OpenType shaping
+core from `vendor/harfbuzz`. HarfBuzz supplies manuscript glyph selection,
+positioning, clusters, and measurement; CoreText/CoreGraphics rasterize and
+present the positioned glyphs.
+
+- Project: <https://github.com/harfbuzz/harfbuzz>
+- Release: <https://github.com/harfbuzz/harfbuzz/releases/tag/14.2.1>
+- License: MIT-style; see `vendor/harfbuzz/COPYING`
+- Provenance and build configuration: `vendor/harfbuzz/README.novella.md`
+
 The files under `vendor/` are not covered by Novella's MPL-2.0 license. They
 remain governed by their respective upstream terms. The Junicode font remains
 under the SIL Open Font License. The adapted justification core preserves the

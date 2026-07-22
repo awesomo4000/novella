@@ -28,3 +28,11 @@
 - Added the major cross-platform application architecture specification.
 - Added a Windows 10 native application target with an isolated Win32 window
   and per-monitor DPI support.
+- Expanded the cross-platform architecture specification to define Windows as
+  a third native shell alongside macOS and X11.
+- Made shared HarfBuzz shaping and measurement authoritative for manuscript
+  layout on macOS, X11, and Windows.
+- Vendored HarfBuzz 14.2.1 and moved the macOS writing sheet from CoreText
+  shaping to shared HarfBuzz glyph runs, measurements, and caret clusters.
+- Positioned the macOS caret completely before its insertion boundary so it
+  does not paint over the following character.

@@ -39,9 +39,10 @@ The library tests are platform-independent:
 zig build test
 ```
 
-The sample uses only macOS system frameworks and embeds an XZ-compressed
-Junicode payload, inflating and checksum-validating it in memory before
-CoreText loads it. It therefore has no runtime files or package dependencies:
+The sample uses macOS system frameworks plus a statically compiled, vendored
+HarfBuzz core. It embeds an XZ-compressed Junicode payload, inflating and
+checksum-validating it in memory before HarfBuzz and CoreText load the same
+bytes. It therefore has no runtime files or installed package dependencies:
 
 ```sh
 zig build run
@@ -50,6 +51,9 @@ zig build run
 With no arguments, the app opens a blank writing sheet. The arrow keys move the
 insertion point, Backspace and Forward Delete edit around it, Return starts a
 paragraph, and Command-Q quits. Paragraphs reflow as the manuscript grows.
+HarfBuzz is authoritative for glyph selection, advances, clusters, caret
+boundaries, and the measurements passed to the justification algorithm;
+CoreText draws those pre-shaped glyphs without reshaping the text.
 
 Start with your own UTF-8 text from a file, stdin, or a literal argument:
 
