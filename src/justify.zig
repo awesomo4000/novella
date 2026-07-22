@@ -65,6 +65,10 @@ pub const Options = struct {
     space_stretch: f64 = 0.5,
     /// Fraction of a natural word space available for shrinking.
     space_shrink: f64 = 1.0 / 3.0,
+    /// Absolute badness-only stretch used by the third pass. `null` follows
+    /// justif's automatic value of twelve natural spaces (roughly 3 em).
+    /// Set this to zero to disable the dedicated emergency-stretch pass.
+    emergency_stretch: ?f64 = null,
 };
 
 pub const Word = struct {
@@ -114,6 +118,9 @@ pub const Layout = struct {
     ) !Layout {
         if (!(target_width > 0) or !std.math.isFinite(target_width)) return error.InvalidWidth;
         if (options.space_stretch < 0 or options.space_shrink < 0) return error.InvalidFlex;
+        if (options.emergency_stretch) |value| {
+            if (value < 0 or !std.math.isFinite(value)) return error.InvalidFlex;
+        }
 
         var word_list: std.ArrayList(Word) = .empty;
         errdefer word_list.deinit(allocator);
@@ -153,6 +160,7 @@ pub const Layout = struct {
 
         const stretch = natural_space * options.space_stretch;
         const shrink = natural_space * options.space_shrink;
+        const emergency_stretch = options.emergency_stretch orelse 12.0 * natural_space;
 
         var result: ?AttemptResult = null;
         if (options.pretolerance >= 0) {
@@ -166,6 +174,7 @@ pub const Layout = struct {
                 shrink,
                 options,
                 @intCast(options.pretolerance),
+                0,
                 false,
             );
         }
@@ -180,11 +189,12 @@ pub const Layout = struct {
                 shrink,
                 options,
                 options.tolerance,
+                0,
                 false,
             );
         }
         var emergency = false;
-        if (result == null) {
+        if (result == null and emergency_stretch > 0) {
             result = try attempt(
                 allocator,
                 words,
@@ -194,7 +204,8 @@ pub const Layout = struct {
                 stretch,
                 shrink,
                 options,
-                inf_bad,
+                options.tolerance,
+                emergency_stretch,
                 false,
             );
             emergency = true;
@@ -210,8 +221,10 @@ pub const Layout = struct {
                 shrink,
                 options,
                 inf_bad,
+                emergency_stretch,
                 true,
             );
+            emergency = true;
         }
         const solved = result orelse return error.NoLayout;
         return .{
@@ -254,6 +267,7 @@ fn attempt(
     shrink_per_space: f64,
     options: Options,
     tolerance: u32,
+    extra_stretch: f64,
     rescue: bool,
 ) !?AttemptResult {
     const class_count = 4;
@@ -273,6 +287,7 @@ fn attempt(
             const needed = target - natural;
             const shrinking = needed < 0;
             const available = gap_count * (if (shrinking) shrink_per_space else stretch_per_space);
+            const badness_available = available + (if (shrinking) 0 else extra_stretch);
             var ratio: f64 = 0;
             var line_badness: u32 = 0;
             var overfull = false;
@@ -285,7 +300,7 @@ fn attempt(
                 ratio = if (available > 0) needed / available else if (needed > 0) std.math.inf(f64) else -std.math.inf(f64);
                 overfull = ratio < -1;
                 if (overfull and !rescue) continue;
-                line_badness = badness(@abs(needed), available);
+                line_badness = badness(@abs(needed), badness_available);
                 if (line_badness > tolerance) continue;
             }
 
@@ -424,6 +439,23 @@ test "layout returns render-ready justified lines" {
         try std.testing.expectApproxEqAbs(line.target_width, line.renderedWidth(layout.words), 0.000_001);
     }
     try std.testing.expect(!layout.lines[layout.lines.len - 1].justified);
+}
+
+test "emergency stretch selects breaks without changing painted width" {
+    const allocator = std.testing.allocator;
+    var layout = try Layout.init(
+        allocator,
+        "aa aa aa aa aa",
+        7,
+        .{ .measure_fn = monospaceMeasure },
+        .{},
+    );
+    defer layout.deinit(allocator);
+
+    try std.testing.expect(layout.used_emergency_pass);
+    try std.testing.expectEqual(@as(usize, 2), layout.lines[0].word_end);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), layout.lines[0].ratio, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), layout.lines[0].renderedWidth(layout.words), 0.000_001);
 }
 
 test "whitespace-only paragraphs produce no lines" {

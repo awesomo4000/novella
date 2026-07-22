@@ -36,3 +36,5 @@
   shaping to shared HarfBuzz glyph runs, measurements, and caret clusters.
 - Positioned the macOS caret completely before its insertion boundary so it
   does not paint over the following character.
+- Added justif-compatible badness-only emergency stretch and a real-font
+  resize regression test to prevent catastrophic two-word spacing.

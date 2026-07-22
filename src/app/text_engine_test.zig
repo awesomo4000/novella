@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
+const novella = @import("novella");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
+
+fn harfbuzzMeasure(context: ?*anyopaque, text: []const u8) f64 {
+    const engine: *const shaping.Engine = @ptrCast(@alignCast(context.?));
+    var run = engine.shape(std.heap.smp_allocator, text) catch return std.math.nan(f64);
+    defer run.deinit(std.heap.smp_allocator);
+    return run.advance;
+}
 
 test "Junicode shaping is deterministic" {
     const allocator = std.testing.allocator;
@@ -65,4 +73,40 @@ test "combining marks share a HarfBuzz caret cluster" {
     try std.testing.expect(run.glyphs.len >= 2);
     try std.testing.expectEqual(@as(u32, 0), run.glyphs[0].cluster);
     try std.testing.expectEqual(@as(u32, 3), run.glyphs[1].cluster);
+}
+
+test "resizing does not create a chasm between two words" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+
+    var engine = try shaping.Engine.init(font_bytes, 18.5);
+    defer engine.deinit();
+
+    const paragraph = "The text breaks use a justification algorithm that makes the browser text \"pretty\" justification look like it was created by monkeys. Only Knuth knows the true way to get typeset quality in text. Don't fuck with Knuth.";
+    var maximum_space: f64 = 0;
+    var width: f64 = 224.0;
+    while (width <= 498.0) : (width += 0.5) {
+        var layout = try novella.Layout.init(
+            allocator,
+            paragraph,
+            width,
+            .{ .context = &engine, .measure_fn = harfbuzzMeasure },
+            .{},
+        );
+        defer layout.deinit(allocator);
+
+        for (layout.lines) |line| {
+            if (line.justified and line.space_width > maximum_space) {
+                maximum_space = line.space_width;
+            }
+            if (!line.justified or line.word_end - line.word_start != 2) continue;
+            const first = layout.words[line.word_start].text;
+            const second = layout.words[line.word_start + 1].text;
+            if (std.mem.eql(u8, first, "The") and std.mem.eql(u8, second, "text")) {
+                return error.TwoWordChasm;
+            }
+        }
+    }
+    try std.testing.expect(maximum_space <= 6.0 * harfbuzzMeasure(&engine, " "));
 }

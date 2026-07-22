@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
+                .{ .name = "novella", .module = novella },
                 .{ .name = "text_engine", .module = text_engine },
                 .{ .name = "font_data", .module = font_data },
             },

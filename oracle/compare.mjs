@@ -63,7 +63,7 @@ const breakOptions = {
   adjDemerits: 10_000,
   doubleHyphenDemerits: 10_000,
   finalHyphenDemerits: 5_000,
-  emergencyStretch: 0,
+  emergencyStretch: "auto",
   lastLineMinWidth: 0,
 };
 
