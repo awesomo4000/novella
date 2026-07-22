@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const default_target: std.Target.Query = if (builtin.os.tag == .windows) .{
+        .cpu_arch = builtin.cpu.arch,
+        .os_tag = .windows,
+        .os_version_min = .{ .windows = .win10_rs1 },
+        .os_version_max = .{ .windows = std.Target.Os.WindowsVersion.latest },
+        .abi = builtin.abi,
+    } else .{};
+    const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
 
     const novella = b.addModule("novella", .{
@@ -37,6 +45,34 @@ pub fn build(b: *std.Build) void {
         if (b.args) |args| run_command.addArgs(args);
         const run_step = b.step("run", "Run the native macOS writing sheet");
         run_step.dependOn(&run_command.step);
+    }
+
+    if (target.result.os.tag == .windows) {
+        const windows_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/windows/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        windows_module.link_libc = true;
+        windows_module.linkSystemLibrary("user32", .{});
+        const windows_app = b.addExecutable(.{
+            .name = "novella",
+            .root_module = windows_module,
+            .win32_manifest = b.path("src/platform/windows/novella.manifest"),
+        });
+        windows_app.subsystem = .windows;
+
+        const install_windows = b.addInstallArtifact(windows_app, .{});
+        b.getInstallStep().dependOn(&install_windows.step);
+        const windows_step = b.step("windows", "Build the native Windows application");
+        windows_step.dependOn(&install_windows.step);
+
+        const run_windows_command = b.addRunArtifact(windows_app);
+        run_windows_command.step.dependOn(&install_windows.step);
+        const run_windows_step = b.step("run-windows", "Run the native Windows application");
+        run_windows_step.dependOn(&run_windows_command.step);
+        const run_step = b.step("run", "Run the native Windows application");
+        run_step.dependOn(&run_windows_command.step);
     }
 
     const xau = b.addLibrary(.{
