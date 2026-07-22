@@ -1,0 +1,9 @@
+{
+  "name": "novella-justif-oracle",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "dependencies": {
+    "justif": "0.4.2"
+  }
+}

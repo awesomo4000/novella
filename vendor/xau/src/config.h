@@ -1,0 +1,6 @@
+#ifndef NOVELLA_VENDOR_XAU_CONFIG_H
+#define NOVELLA_VENDOR_XAU_CONFIG_H
+
+#define HAVE_UNISTD_H 1
+
+#endif
