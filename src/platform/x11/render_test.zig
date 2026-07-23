@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
+const _frame_request = @import("frame_request.zig");
 const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const rasterizer = @import("freetype.zig");
 const Surface = @import("surface.zig").Surface;
+
+comptime {
+    _ = _frame_request;
+}
 
 test "FreeType blends HarfBuzz-selected Junicode glyphs into the X11 surface" {
     const allocator = std.testing.allocator;

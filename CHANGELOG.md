@@ -47,3 +47,5 @@
 - Vendored a minimal static FreeType 2.14.3 rasterizer and connected the X11
   sheet to shared HarfBuzz shaping, Junicode, justification, startup text, and
   caret rendering.
+- Coalesced queued X11 expose and resize events so each burst produces only one
+  surface resize, layout, rasterization, and presentation.

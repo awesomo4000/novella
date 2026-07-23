@@ -984,7 +984,8 @@ The architecture is complete when:
 This is a multi-phase XL body of work. Shared sheet geometry, HarfBuzz font
 data, the raw-XCB retained surface/lifecycle, and the X11 FreeType rasterizer
 have completed their initial integrations and dependency audits. X11 now
-displays justified Junicode manuscript text through the core `PutImage` path.
+displays justified Junicode manuscript text through the core `PutImage` path
+and coalesces queued expose and resize events before rendering each frame.
 
 The shared editor/document extraction, XKB/xkbcommon input, and caret-command
 parity remain before X11 is an interactive editor. Windows still needs the

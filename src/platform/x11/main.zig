@@ -6,6 +6,7 @@ const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const rasterizer = @import("freetype.zig");
+const FrameRequest = @import("frame_request.zig").FrameRequest;
 const Surface = @import("surface.zig").Surface;
 const PixelFormat = @import("surface.zig").PixelFormat;
 
@@ -163,41 +164,61 @@ pub fn main(init: std.process.Init) !void {
     );
 
     _ = xcb.xcb_map_window(connection, window);
-    var dirty = true;
     if (xcb.xcb_flush(connection) <= 0) return error.X11FlushFailed;
+    try paintDocument(&surface, initial_text, &text_engine, &glyph_engine);
+    try present(connection, window, gc, screen.*.root_depth, &surface);
 
     event_loop: while (xcb.xcb_connection_has_error(connection) == 0) {
-        if (dirty) {
-            try paintDocument(&surface, initial_text, &text_engine, &glyph_engine);
-            try present(connection, window, gc, screen.*.root_depth, &surface);
-            dirty = false;
+        var request = FrameRequest.init(surface.width, surface.height);
+        var queued_event = xcb.xcb_wait_for_event(connection);
+        if (queued_event == null) break;
+
+        while (queued_event) |event| {
+            const close_requested = collectFrameEvent(
+                &request,
+                event,
+                wm_protocols,
+                wm_delete_window,
+            );
+            xcb.free(event);
+            if (close_requested) break :event_loop;
+            queued_event = xcb.xcb_poll_for_event(connection);
         }
 
-        const event = xcb.xcb_wait_for_event(connection) orelse break;
-        defer xcb.free(event);
-        const event_type = event.*.response_type & 0x7f;
-        switch (event_type) {
-            xcb.XCB_EXPOSE => dirty = true,
-            xcb.XCB_CONFIGURE_NOTIFY => {
-                const configured: *const xcb.xcb_configure_notify_event_t = @ptrCast(event);
-                if (configured.*.width != surface.width or configured.*.height != surface.height) {
-                    try surface.resize(configured.*.width, configured.*.height);
-                    dirty = true;
-                }
-            },
-            xcb.XCB_CLIENT_MESSAGE => {
-                const message: *const xcb.xcb_client_message_event_t = @ptrCast(event);
-                if (message.*.type == wm_protocols and
-                    message.*.format == 32 and
-                    message.*.data.data32[0] == wm_delete_window)
-                    break :event_loop;
-            },
-            xcb.XCB_DESTROY_NOTIFY => break :event_loop,
-            else => {},
+        if (request.width != surface.width or request.height != surface.height)
+            try surface.resize(request.width, request.height);
+        if (request.dirty) {
+            try paintDocument(&surface, initial_text, &text_engine, &glyph_engine);
+            try present(connection, window, gc, screen.*.root_depth, &surface);
         }
     }
     if (xcb.xcb_connection_has_error(connection) != 0)
         return error.X11ConnectionLost;
+}
+
+fn collectFrameEvent(
+    request: *FrameRequest,
+    event: *const xcb.xcb_generic_event_t,
+    wm_protocols: xcb.xcb_atom_t,
+    wm_delete_window: xcb.xcb_atom_t,
+) bool {
+    const event_type = event.*.response_type & 0x7f;
+    switch (event_type) {
+        xcb.XCB_EXPOSE => request.expose(),
+        xcb.XCB_CONFIGURE_NOTIFY => {
+            const configured: *const xcb.xcb_configure_notify_event_t = @ptrCast(event);
+            request.configure(configured.*.width, configured.*.height);
+        },
+        xcb.XCB_CLIENT_MESSAGE => {
+            const message: *const xcb.xcb_client_message_event_t = @ptrCast(event);
+            return message.*.type == wm_protocols and
+                message.*.format == 32 and
+                message.*.data.data32[0] == wm_delete_window;
+        },
+        xcb.XCB_DESTROY_NOTIFY => return true,
+        else => {},
+    }
+    return false;
 }
 
 fn loadInitialText(init: std.process.Init) ![]const u8 {
