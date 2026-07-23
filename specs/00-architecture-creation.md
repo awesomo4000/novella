@@ -473,6 +473,11 @@ Damage is accumulated and coalesced for:
 The first correct implementation may present the whole window. Dirty-rectangle
 presentation follows only after full-frame correctness is established.
 
+The X11 window uses the native desktop color as its server-side background and
+northwest bit gravity during live resize. The server can therefore retain the
+overlapping portion of the last frame and fill only newly exposed strips with a
+visually compatible color while a fresh client frame is pending.
+
 Core PutImage is the compatibility path and works for local or remote X
 connections. MIT-SHM is an optional local optimization and must never be
 required to start or render.

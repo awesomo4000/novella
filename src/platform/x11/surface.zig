@@ -70,6 +70,10 @@ pub const Surface = struct {
         self.fillRect(.{ .x = 0, .y = 0, .width = self.width, .height = self.height }, color);
     }
 
+    pub fn nativePixel(self: *const Surface, color: sheet.Color) u32 {
+        return self.pack(color);
+    }
+
     pub fn fillRect(self: *Surface, rect: Rect, color: sheet.Color) void {
         const left: i32 = @max(0, rect.x);
         const top: i32 = @max(0, rect.y);
@@ -208,6 +212,8 @@ test "native pixel packing follows masks and byte order" {
     });
     defer little.deinit();
     try little.resize(1, 1);
-    little.fill(.{ .r = 0x12, .g = 0x34, .b = 0x56 });
+    const color = sheet.Color{ .r = 0x12, .g = 0x34, .b = 0x56 };
+    try std.testing.expectEqual(@as(u32, 0x00123456), little.nativePixel(color));
+    little.fill(color);
     try std.testing.expectEqualSlices(u8, &.{ 0x56, 0x34, 0x12, 0x00 }, little.pixels);
 }

@@ -65,7 +65,11 @@ pub fn main(init: std.process.Init) !void {
     const event_mask: u32 = xcb.XCB_EVENT_MASK_EXPOSURE |
         xcb.XCB_EVENT_MASK_KEY_PRESS |
         xcb.XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-    const values = [_]u32{ screen.*.black_pixel, event_mask };
+    const values = [_]u32{
+        surface.nativePixel(sheet.desktop),
+        xcb.XCB_GRAVITY_NORTH_WEST,
+        event_mask,
+    };
     _ = xcb.xcb_create_window(
         connection,
         screen.*.root_depth,
@@ -78,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
         0,
         xcb.XCB_WINDOW_CLASS_INPUT_OUTPUT,
         screen.*.root_visual,
-        xcb.XCB_CW_BACK_PIXEL | xcb.XCB_CW_EVENT_MASK,
+        xcb.XCB_CW_BACK_PIXEL | xcb.XCB_CW_BIT_GRAVITY | xcb.XCB_CW_EVENT_MASK,
         &values,
     );
     defer _ = xcb.xcb_destroy_window(connection, window);

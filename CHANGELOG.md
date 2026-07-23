@@ -53,3 +53,5 @@
   reflow reuses invariant word shaping and measurements.
 - Cached normalized FreeType glyph coverage and bearings by glyph identifier
   so X11 repaints blend reusable bitmaps instead of rerasterizing every glyph.
+- Replaced black resize clears with the native desktop color and requested
+  northwest bit gravity so X11 servers preserve overlapping window contents.
