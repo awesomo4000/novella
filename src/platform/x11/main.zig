@@ -7,6 +7,7 @@ const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const rasterizer = @import("freetype.zig");
 const FrameRequest = @import("frame_request.zig").FrameRequest;
+const RunCache = @import("run_cache.zig").RunCache;
 const Surface = @import("surface.zig").Surface;
 const PixelFormat = @import("surface.zig").PixelFormat;
 
@@ -19,36 +20,6 @@ const initial_width: u16 = 900;
 const initial_height: u16 = 760;
 const max_text_bytes = 64 * 1024;
 
-const CachedRun = struct {
-    source: []const u8,
-    run: shaping.Run,
-};
-
-const FrameShaper = struct {
-    allocator: std.mem.Allocator,
-    engine: *const shaping.Engine,
-    runs: std.ArrayList(CachedRun) = .empty,
-
-    fn deinit(self: *FrameShaper) void {
-        for (self.runs.items) |*entry| entry.run.deinit(self.allocator);
-        self.runs.deinit(self.allocator);
-    }
-
-    fn shape(self: *FrameShaper, source: []const u8) !shaping.Run {
-        for (self.runs.items) |entry| {
-            if (entry.source.ptr == source.ptr and entry.source.len == source.len)
-                return entry.run;
-        }
-        const run = try self.engine.shape(self.allocator, source);
-        errdefer {
-            var owned = run;
-            owned.deinit(self.allocator);
-        }
-        try self.runs.append(self.allocator, .{ .source = source, .run = run });
-        return run;
-    }
-};
-
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     const initial_text = try loadInitialText(init);
@@ -56,6 +27,8 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(font_bytes);
     var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
     defer text_engine.deinit();
+    var run_cache = RunCache.init(allocator, &text_engine);
+    defer run_cache.deinit();
     var glyph_engine = try rasterizer.Engine.init(font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
 
@@ -165,7 +138,7 @@ pub fn main(init: std.process.Init) !void {
 
     _ = xcb.xcb_map_window(connection, window);
     if (xcb.xcb_flush(connection) <= 0) return error.X11FlushFailed;
-    try paintDocument(&surface, initial_text, &text_engine, &glyph_engine);
+    try paintDocument(&surface, initial_text, &run_cache, &glyph_engine);
     try present(connection, window, gc, screen.*.root_depth, &surface);
 
     event_loop: while (xcb.xcb_connection_has_error(connection) == 0) {
@@ -188,7 +161,7 @@ pub fn main(init: std.process.Init) !void {
         if (request.width != surface.width or request.height != surface.height)
             try surface.resize(request.width, request.height);
         if (request.dirty) {
-            try paintDocument(&surface, initial_text, &text_engine, &glyph_engine);
+            try paintDocument(&surface, initial_text, &run_cache, &glyph_engine);
             try present(connection, window, gc, screen.*.root_depth, &surface);
         }
     }
@@ -283,7 +256,7 @@ fn loadInitialText(init: std.process.Init) ![]const u8 {
 fn paintDocument(
     surface: *Surface,
     text: []const u8,
-    text_engine: *const shaping.Engine,
+    run_cache: *RunCache,
     glyph_engine: *rasterizer.Engine,
 ) !void {
     surface.paintSheet();
@@ -291,8 +264,6 @@ fn paintDocument(
     var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer scratch.deinit();
     const allocator = scratch.allocator();
-    var frame_shaper = FrameShaper{ .allocator = allocator, .engine = text_engine };
-    defer frame_shaper.deinit();
 
     var baseline = geometry.first_baseline_top;
     var caret_x = geometry.content_left;
@@ -308,7 +279,7 @@ fn paintDocument(
                 allocator,
                 paragraph,
                 geometry.measure_width,
-                .{ .context = &frame_shaper, .measure_fn = measureBodyText },
+                .{ .context = run_cache, .measure_fn = measureBodyText },
                 .{},
             );
             defer layout.deinit(allocator);
@@ -318,7 +289,7 @@ fn paintDocument(
                 var x = geometry.content_left;
                 const words = layout.words[line.word_start..line.word_end];
                 for (words, 0..) |word, index| {
-                    const run = try frame_shaper.shape(word.text);
+                    const run = try run_cache.shape(word.text);
                     try glyph_engine.drawRun(surface, run, x, baseline, sheet.ink);
                     x += word.width;
                     if (index + 1 < words.len and words[index + 1].space_before)
@@ -348,8 +319,8 @@ fn paintDocument(
 
 fn measureBodyText(context: ?*anyopaque, source: []const u8) f64 {
     const state = context orelse return 0;
-    const shaper: *FrameShaper = @ptrCast(@alignCast(state));
-    const run = shaper.shape(source) catch return 0;
+    const run_cache: *RunCache = @ptrCast(@alignCast(state));
+    const run = run_cache.shape(source) catch return 0;
     return run.advance;
 }
 

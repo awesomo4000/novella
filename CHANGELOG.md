@@ -49,3 +49,5 @@
   caret rendering.
 - Coalesced queued X11 expose and resize events so each burst produces only one
   surface resize, layout, rasterization, and presentation.
+- Cached HarfBuzz runs by UTF-8 content across X11 frames so resize-driven
+  reflow reuses invariant word shaping and measurements.
