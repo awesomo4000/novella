@@ -18,4 +18,5 @@ FreeType, Graphite2, Cairo, or any HarfBuzz utility or subset library.
 On macOS ReleaseSmall, the static HarfBuzz archive is 1,153,284 bytes and the
 complete Novella executable is 3,546,440 bytes. `otool -L` reports only Apple
 system frameworks and system runtimes; HarfBuzz is not a dynamic dependency.
-
+The same source and compile configuration now feed the raw-X11 executable;
+FreeType consumes its selected glyph identifiers without reshaping.

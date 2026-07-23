@@ -981,10 +981,13 @@ The architecture is complete when:
 
 ## Estimate
 
-This is a multi-phase XL body of work. `00-00` and `00-01` should be completed
-before either bootstrap renders manuscript text. HarfBuzz has completed its
-initial vendoring audit and macOS integration; connecting that same build to
-X11 and Windows remains part of `00-03`. FreeType and xkbcommon vendoring each
-require their own dependency audit and should not be hidden inside an otherwise
-unrelated phase. DirectWrite and Direct2D require a separate Windows API and
-import audit even though they are system components.
+This is a multi-phase XL body of work. Shared sheet geometry, HarfBuzz font
+data, the raw-XCB retained surface/lifecycle, and the X11 FreeType rasterizer
+have completed their initial integrations and dependency audits. X11 now
+displays justified Junicode manuscript text through the core `PutImage` path.
+
+The shared editor/document extraction, XKB/xkbcommon input, and caret-command
+parity remain before X11 is an interactive editor. Windows still needs the
+shared HarfBuzz connection and its separate DirectWrite/Direct2D API and import
+audit. Do not hide xkbcommon or Windows rendering work inside an unrelated
+phase merely because the first X11 manuscript rendering now exists.

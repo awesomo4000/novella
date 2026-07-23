@@ -19,57 +19,62 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sheet = b.addModule("novella_sheet", .{
+        .root_source_file = b.path("src/app/sheet.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const test_step = b.step("test", "Run the justification and shared application tests");
 
+    const harfbuzz = b.addLibrary(.{
+        .name = "harfbuzz-vendored",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    harfbuzz.root_module.link_libc = true;
+    harfbuzz.root_module.link_libcpp = true;
+    harfbuzz.root_module.addIncludePath(b.path("vendor/harfbuzz/src"));
+    harfbuzz.root_module.addCSourceFile(.{
+        .file = b.path("vendor/harfbuzz/src/harfbuzz.cc"),
+        .flags = &.{
+            "-std=c++17",
+            "-fno-exceptions",
+            "-fno-rtti",
+            "-fvisibility=hidden",
+            "-DHB_NO_AAT",
+            "-DHB_NO_BITMAP",
+            "-DHB_NO_COLOR",
+            "-DHB_NO_DRAW",
+            "-DHB_NO_GETENV",
+            "-DHB_NO_MATH",
+            "-DHB_NO_META",
+            "-DHB_NO_PAINT",
+            "-DHB_NO_SETLOCALE",
+            "-DHB_NO_STYLE",
+        },
+    });
+
+    const text_engine = b.createModule(.{
+        .root_source_file = b.path("src/app/text_engine.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    text_engine.addIncludePath(b.path("vendor/harfbuzz/src"));
+    text_engine.linkLibrary(harfbuzz);
+
+    const font_data = b.createModule(.{
+        .root_source_file = b.path("src/app/font_data.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    font_data.addAnonymousImport("junicode_font", .{
+        .root_source_file = b.path("src/assets/junicode.zig"),
+    });
+
     if (target.result.os.tag == .macos) {
-        const harfbuzz = b.addLibrary(.{
-            .name = "harfbuzz-vendored",
-            .linkage = .static,
-            .root_module = b.createModule(.{
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-        harfbuzz.root_module.link_libc = true;
-        harfbuzz.root_module.link_libcpp = true;
-        harfbuzz.root_module.addIncludePath(b.path("vendor/harfbuzz/src"));
-        harfbuzz.root_module.addCSourceFile(.{
-            .file = b.path("vendor/harfbuzz/src/harfbuzz.cc"),
-            .flags = &.{
-                "-std=c++17",
-                "-fno-exceptions",
-                "-fno-rtti",
-                "-fvisibility=hidden",
-                "-DHB_NO_AAT",
-                "-DHB_NO_BITMAP",
-                "-DHB_NO_COLOR",
-                "-DHB_NO_DRAW",
-                "-DHB_NO_GETENV",
-                "-DHB_NO_MATH",
-                "-DHB_NO_META",
-                "-DHB_NO_PAINT",
-                "-DHB_NO_SETLOCALE",
-                "-DHB_NO_STYLE",
-            },
-        });
-
-        const text_engine = b.createModule(.{
-            .root_source_file = b.path("src/app/text_engine.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        text_engine.addIncludePath(b.path("vendor/harfbuzz/src"));
-        text_engine.linkLibrary(harfbuzz);
-
-        const font_data = b.createModule(.{
-            .root_source_file = b.path("src/app/font_data.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        font_data.addAnonymousImport("junicode_font", .{
-            .root_source_file = b.path("src/assets/junicode.zig"),
-        });
-
         const text_engine_test_module = b.createModule(.{
             .root_source_file = b.path("src/app/text_engine_test.zig"),
             .target = target,
@@ -92,6 +97,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "novella", .module = novella },
                 .{ .name = "text_engine", .module = text_engine },
                 .{ .name = "font_data", .module = font_data },
+                .{ .name = "sheet", .module = sheet },
             },
         });
         macos_module.linkFramework("AppKit", .{});
@@ -169,6 +175,32 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+
+    const freetype = b.addLibrary(.{
+        .name = "freetype-vendored",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    freetype.root_module.link_libc = true;
+    freetype.root_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
+    freetype.root_module.addIncludePath(b.path("vendor/freetype/include"));
+    freetype.root_module.addCSourceFiles(.{
+        .root = b.path("vendor/freetype"),
+        .files = &.{
+            "src/base/ftsystem.c",
+            "src/base/ftinit.c",
+            "src/base/ftdebug.c",
+            "src/base/ftbase.c",
+            "src/truetype/truetype.c",
+            "src/sfnt/sfnt.c",
+            "src/psnames/psnames.c",
+            "src/smooth/smooth.c",
+        },
+        .flags = &.{ "-std=c99", "-DFT2_BUILD_LIBRARY" },
+    });
     xcb.root_module.link_libc = true;
     xcb.root_module.addIncludePath(b.path("vendor/xcb/src"));
     xcb.root_module.addIncludePath(b.path("vendor/xau/include"));
@@ -191,13 +223,39 @@ pub fn build(b: *std.Build) void {
     });
 
     const x11_module = b.createModule(.{
-        .root_source_file = b.path("src/platform/x11.zig"),
+        .root_source_file = b.path("src/platform/x11/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "novella", .module = novella },
+            .{ .name = "sheet", .module = sheet },
+            .{ .name = "text_engine", .module = text_engine },
+            .{ .name = "font_data", .module = font_data },
+        },
     });
     x11_module.addIncludePath(b.path("vendor/xcb/src"));
+    x11_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
+    x11_module.addIncludePath(b.path("vendor/freetype/include"));
     x11_module.linkLibrary(xcb);
     x11_module.linkLibrary(xau);
+    x11_module.linkLibrary(freetype);
+
+    const x11_render_test_module = b.createModule(.{
+        .root_source_file = b.path("src/platform/x11/render_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sheet", .module = sheet },
+            .{ .name = "text_engine", .module = text_engine },
+            .{ .name = "font_data", .module = font_data },
+        },
+    });
+    x11_render_test_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
+    x11_render_test_module.addIncludePath(b.path("vendor/freetype/include"));
+    x11_render_test_module.linkLibrary(freetype);
+    const x11_render_tests = b.addTest(.{ .root_module = x11_render_test_module });
+    const run_x11_render_tests = b.addRunArtifact(x11_render_tests);
+    test_step.dependOn(&run_x11_render_tests.step);
     const x11_app = b.addExecutable(.{
         .name = "novella-x11",
         .root_module = x11_module,
@@ -208,6 +266,7 @@ pub fn build(b: *std.Build) void {
 
     const run_x11_command = b.addRunArtifact(x11_app);
     run_x11_command.step.dependOn(&install_x11.step);
+    if (b.args) |args| run_x11_command.addArgs(args);
     const run_x11_step = b.step("run-x11", "Run the static-XCB X11 sample");
     run_x11_step.dependOn(&run_x11_command.step);
 

@@ -19,9 +19,10 @@ the Zig library or macOS application.
 
 ## Junicode
 
-The macOS sample embeds an XZ-compressed copy of `Junicode-Roman.ttf`, the same
-default face used by the `justif` demonstration. It is reconstructed in memory
-before CoreText use; the font itself remains covered by the OFL.
+The native samples embed an XZ-compressed copy of `Junicode-Roman.ttf`, the
+same default face used by the `justif` demonstration. It is reconstructed in
+memory before CoreText or FreeType use; the font itself remains covered by the
+OFL.
 
 - Project: <https://junicode.sourceforge.io/>
 - Copyright: 2025 Peter S. Baker
@@ -41,15 +42,27 @@ runtime.
 
 ## HarfBuzz
 
-The macOS application statically compiles the HarfBuzz 14.2.1 OpenType shaping
-core from `vendor/harfbuzz`. HarfBuzz supplies manuscript glyph selection,
-positioning, clusters, and measurement; CoreText/CoreGraphics rasterize and
-present the positioned glyphs.
+The macOS and raw-X11 applications statically compile the HarfBuzz 14.2.1
+OpenType shaping core from `vendor/harfbuzz`. HarfBuzz supplies manuscript
+glyph selection, positioning, clusters, and measurement;
+CoreText/CoreGraphics or FreeType rasterize the positioned glyphs.
 
 - Project: <https://github.com/harfbuzz/harfbuzz>
 - Release: <https://github.com/harfbuzz/harfbuzz/releases/tag/14.2.1>
 - License: MIT-style; see `vendor/harfbuzz/COPYING`
 - Provenance and build configuration: `vendor/harfbuzz/README.novella.md`
+
+## FreeType
+
+The X11 application statically compiles a minimal TrueType rasterizer from
+FreeType 2.14.3. It loads the embedded Junicode bytes directly from memory and
+rasterizes only the glyph identifiers selected by HarfBuzz. Fontconfig, Xft,
+and installed host fonts are not used.
+
+- Project: <https://freetype.org/>
+- Release: <https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz>
+- License: FreeType License or GPLv2; see `vendor/freetype/LICENSE.TXT`
+- Provenance and build configuration: `vendor/freetype/README.novella.md`
 
 The files under `vendor/` are not covered by Novella's MPL-2.0 license. They
 remain governed by their respective upstream terms. The Junicode font remains

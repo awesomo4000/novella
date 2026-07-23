@@ -42,3 +42,8 @@
   tokens so editor text cannot escape the sheet horizontally.
 - Made the rescue pass prefer contained ragged lines over overfull lines and
   bounded painted emergency spacing to prevent whitespace chasms.
+- Added the retained raw-XCB software surface, shared sheet geometry, X11
+  resize/expose/close lifecycle, and core `PutImage` presentation.
+- Vendored a minimal static FreeType 2.14.3 rasterizer and connected the X11
+  sheet to shared HarfBuzz shaping, Junicode, justification, startup text, and
+  caret rendering.

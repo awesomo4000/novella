@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const novella = @import("novella");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
+const sheet = @import("sheet");
 
 const Obj = ?*anyopaque;
 const Sel = ?*anyopaque;
@@ -50,8 +51,8 @@ const utf8_encoding: u32 = 0x0800_0100;
 const identity = AffineTransform{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 };
 
 const max_text_bytes = 64 * 1024;
-const line_height = 27.2;
-const body_font_size = 18.5;
+const line_height = sheet.line_height;
+const body_font_size = sheet.body_font_size;
 
 const State = struct {
     view: Obj = null,
@@ -291,29 +292,32 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
     CGContextSetTextMatrix(context, identity);
 
     // Quiet neutral desktop; the paper itself stays actual white.
-    CGContextSetRGBFillColor(context, 0.875, 0.882, 0.875, 1);
+    CGContextSetRGBFillColor(context, sheet.desktop.red(), sheet.desktop.green(), sheet.desktop.blue(), 1);
     CGContextFillRect(context, bounds);
 
-    const paper_width = @min(646.0, @max(320.0, bounds.size.width - 86.0));
+    const geometry = sheet.geometry(bounds.size.width, bounds.size.height);
     const paper = Rect{
-        .origin = .{ .x = (bounds.size.width - paper_width) / 2.0, .y = 20.0 },
-        .size = .{ .width = paper_width, .height = @max(300.0, bounds.size.height - 34.0) },
+        .origin = .{
+            .x = geometry.paper_left,
+            .y = bounds.size.height - geometry.paper_top - geometry.paper_height,
+        },
+        .size = .{ .width = geometry.paper_width, .height = geometry.paper_height },
     };
     const shadow = CGColorCreateGenericRGB(0.08, 0.09, 0.08, 0.22);
     if (shadow != null) {
         CGContextSetShadowWithColor(context, .{ .width = 0, .height = -3 }, 16, shadow);
         CGColorRelease(shadow);
     }
-    CGContextSetRGBFillColor(context, 1, 1, 0.995, 1);
+    CGContextSetRGBFillColor(context, sheet.paper.red(), sheet.paper.green(), sheet.paper.blue(), 1);
     CGContextFillRect(context, paper);
     CGContextSetShadowWithColor(context, .{ .width = 0, .height = 0 }, 0, null);
     CGContextSetRGBStrokeColor(context, 0.72, 0.73, 0.70, 0.55);
     CGContextSetLineWidth(context, 0.5);
     CGContextStrokeRect(context, paper);
 
-    const left = paper.origin.x + @max(48.0, @min(74.0, paper.size.width * 0.115));
-    const measure_width = paper.size.width - 2.0 * (left - paper.origin.x);
-    var baseline = paper.origin.y + paper.size.height - 60.0;
+    const left = geometry.content_left;
+    const measure_width = geometry.measure_width;
+    var baseline = bounds.size.height - geometry.first_baseline_top;
 
     CGContextSetRGBFillColor(context, 0.095, 0.095, 0.09, 1);
 
@@ -376,14 +380,14 @@ fn drawRect(self: Obj, _: Sel, _: Rect) callconv(.c) void {
             } else {
                 recordTrailingCaretStops(shown, paragraph_start, paragraph_end, caret_x, caret_y, layout.natural_space_width);
             }
-            baseline -= 10.5;
+            baseline -= sheet.paragraph_gap;
         } else {
             addCaretStop(paragraph_start, left, baseline);
             // Consecutive Returns create empty paragraphs. Give each one a
             // real visual row so its caret stop cannot collapse onto the
             // previous blank paragraph and confuse subsequent Backspace or
             // vertical-arrow movement.
-            if (separator != null) baseline -= line_height + 10.5;
+            if (separator != null) baseline -= line_height + sheet.paragraph_gap;
         }
         if (separator == null) break;
         addCaretStop(paragraph_end + 1, left, baseline);

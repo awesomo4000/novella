@@ -3,7 +3,7 @@
 # novella
 
 `novella` is a DOM-free Zig 0.16 library for publication-style paragraph
-justification, accompanied by a small native macOS writing sheet. Its
+justification, accompanied by native macOS and raw-X11 writing sheets. Its
 whole-paragraph line breaker is derived from the TeX-style core in
 [`justif`](https://github.com/lyallcooper/justif): every feasible sequence of
 breaks is considered, and adjacent line fitness participates in the result.
@@ -82,19 +82,26 @@ The explicit platform steps are `zig build windows` and
 
 ### X11 platform sample
 
-The X11 target is deliberately separate from the AppKit application. It
-compiles the vendored XCB core and minimal Xau authentication sources as
-static libraries, without using installed X11 headers or client libraries.
-Set `DISPLAY` to an active server and build or run it with:
+The X11 target is deliberately separate from the AppKit application. It uses
+only raw XCB transport: a retained client-side pixel surface is presented with
+core `PutImage`. Vendored HarfBuzz shapes the embedded Junicode face and a
+minimal vendored FreeType rasterizer blends the selected glyph masks. XCB,
+Xau, HarfBuzz, and FreeType are static, without installed X11 headers, Xft,
+Fontconfig, or host fonts. Set `DISPLAY` to an active server and build or run
+it with:
 
 ```sh
 zig build x11
 DISPLAY=:0 zig build run-x11
+DISPLAY=:0 zig build run-x11 -- --text "The first sentence was already waiting."
+DISPLAY=:0 zig build run-x11 -- -f manuscript.txt
 ```
 
-The first-stage sample opens a plain core-protocol window and exits on any key
-press. On macOS only `libSystem` remains dynamic; XCB and Xau are contained in
-the executable.
+With no arguments it opens a blank sheet. Initial UTF-8 text can come from a
+literal, file, or stdin and is justified through the same HarfBuzz measurements
+and line breaker as macOS. Expose, resize, and window-manager close are handled;
+interactive XKB text entry and editing are the next X11 milestone. On macOS,
+`otool -L` reports only `libSystem` for the X11 executable.
 
 ## Differential oracle
 
