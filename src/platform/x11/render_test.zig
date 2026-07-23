@@ -20,7 +20,7 @@ test "FreeType blends HarfBuzz-selected Junicode glyphs into the X11 surface" {
 
     var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
     defer text_engine.deinit();
-    var glyph_engine = try rasterizer.Engine.init(font_bytes, sheet.body_font_size);
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
 
     var surface = try Surface.init(allocator, .{
@@ -42,6 +42,15 @@ test "FreeType blends HarfBuzz-selected Junicode glyphs into the X11 surface" {
     try glyph_engine.drawRun(&surface, run, 12, 44, sheet.ink);
 
     try std.testing.expect(!std.mem.eql(u8, blank, surface.pixels));
+    const cached_glyphs = glyph_engine.cachedGlyphCount();
+    try std.testing.expect(cached_glyphs > 0);
+    const first_render = try allocator.dupe(u8, surface.pixels);
+    defer allocator.free(first_render);
+
+    surface.fill(sheet.paper);
+    try glyph_engine.drawRun(&surface, run, 12, 44, sheet.ink);
+    try std.testing.expectEqual(cached_glyphs, glyph_engine.cachedGlyphCount());
+    try std.testing.expectEqualSlices(u8, first_render, surface.pixels);
 }
 
 test "X11 run cache reuses shapes for equal text" {

@@ -987,7 +987,8 @@ have completed their initial integrations and dependency audits. X11 now
 displays justified Junicode manuscript text through the core `PutImage` path
 and coalesces queued expose and resize events before rendering each frame.
 HarfBuzz word runs persist across those frames and are reused by content while
-width-dependent line breaking remains fresh.
+width-dependent line breaking remains fresh. The fixed-size X11 FreeType face
+also caches normalized coverage bitmaps by HarfBuzz glyph identifier.
 
 The shared editor/document extraction, XKB/xkbcommon input, and caret-command
 parity remain before X11 is an interactive editor. Windows still needs the

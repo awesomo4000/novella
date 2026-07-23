@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     defer text_engine.deinit();
     var run_cache = RunCache.init(allocator, &text_engine);
     defer run_cache.deinit();
-    var glyph_engine = try rasterizer.Engine.init(font_bytes, sheet.body_font_size);
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
 
     var screen_number: c_int = 0;

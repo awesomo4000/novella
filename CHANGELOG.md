@@ -51,3 +51,5 @@
   surface resize, layout, rasterization, and presentation.
 - Cached HarfBuzz runs by UTF-8 content across X11 frames so resize-driven
   reflow reuses invariant word shaping and measurements.
+- Cached normalized FreeType glyph coverage and bearings by glyph identifier
+  so X11 repaints blend reusable bitmaps instead of rerasterizing every glyph.
