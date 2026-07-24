@@ -33,6 +33,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const editor = b.addModule("novella_editor", .{
+        .root_source_file = b.path("src/app/editor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const test_step = b.step("test", "Run the justification and shared application tests");
 
     const harfbuzz = b.addLibrary(.{
@@ -191,6 +196,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "novella", .module = novella },
             .{ .name = "sheet", .module = sheet },
             .{ .name = "text_engine", .module = text_engine },
+            .{ .name = "editor", .module = editor },
         },
     });
     software_renderer.addIncludePath(b.path("src/render/software/freetype_config"));
@@ -207,6 +213,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "text_engine", .module = text_engine },
                 .{ .name = "font_data", .module = font_data },
                 .{ .name = "software_renderer", .module = software_renderer },
+                .{ .name = "editor", .module = editor },
             },
         });
         windows_module.link_libc = true;
@@ -278,6 +285,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sheet", .module = sheet },
             .{ .name = "text_engine", .module = text_engine },
             .{ .name = "font_data", .module = font_data },
+            .{ .name = "editor", .module = editor },
         },
     });
     software_render_test_module.addIncludePath(b.path("src/render/software/freetype_config"));
@@ -295,6 +303,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(frame_request_tests).step);
+    const editor_tests = b.addTest(.{ .root_module = editor });
+    test_step.dependOn(&b.addRunArtifact(editor_tests).step);
+    const utf16_input_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/windows/utf16_input.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(utf16_input_tests).step);
     const x11_app = b.addExecutable(.{
         .name = "novella-x11",
         .root_module = x11_module,

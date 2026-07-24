@@ -5,6 +5,8 @@ const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const software = @import("software_renderer");
+const editing = @import("editor");
+const utf16_input = @import("utf16_input.zig");
 const win32 = @import("win32.zig").api;
 
 const class_name = std.unicode.utf8ToUtf16LeStringLiteral("NovellaWindow");
@@ -26,7 +28,6 @@ const usage_message = usage: {
 const logical_width: c_int = 900;
 const logical_height: c_int = 760;
 const default_dpi: c_uint = 96;
-const max_text_bytes = 64 * 1024;
 const application_icon: win32.LPCWSTR = @ptrFromInt(32512);
 const arrow_cursor: win32.LPCWSTR = @ptrFromInt(32512);
 
@@ -41,7 +42,8 @@ const windows_pixel_format = software.PixelFormat{
 
 const App = struct {
     allocator: std.mem.Allocator,
-    text: []const u8,
+    document: editing.Editor,
+    utf16_decoder: utf16_input.Decoder = .{},
     scale: f64,
     font_bytes: []u8,
     text_engine: shaping.Engine,
@@ -74,7 +76,7 @@ const App = struct {
 
         app.* = .{
             .allocator = allocator,
-            .text = text,
+            .document = .{},
             .scale = scale,
             .font_bytes = font_bytes,
             .text_engine = text_engine,
@@ -82,6 +84,7 @@ const App = struct {
             .glyph_engine = glyph_engine,
             .surface = surface,
         };
+        try app.document.setText(text);
         app.run_cache.engine = &app.text_engine;
         return app;
     }
@@ -106,9 +109,9 @@ const App = struct {
         if (self.pending_width == 0 or self.pending_height == 0) return;
         try self.surface.resize(self.pending_width, self.pending_height);
         if (!self.dirty) return;
-        try software.paintDocument(
+        try software.paintEditor(
             &self.surface,
-            self.text,
+            &self.document,
             &self.run_cache,
             &self.glyph_engine,
             self.scale,
@@ -225,6 +228,22 @@ fn windowProcedure(
             _ = win32.InvalidateRect(window, null, 0);
             return 0;
         },
+        win32.WM_KEYDOWN => {
+            if (appForWindow(window)) |app| {
+                if (handleVirtualKey(app, word_param, long_param)) {
+                    requestRepaint(window, app);
+                    return 0;
+                }
+            }
+            return win32.DefWindowProcW(window, message, word_param, long_param);
+        },
+        win32.WM_CHAR => {
+            if (appForWindow(window)) |app| {
+                handleCharacter(app, word_param, long_param);
+                requestRepaint(window, app);
+            }
+            return 0;
+        },
         win32.WM_ERASEBKGND => return 1,
         win32.WM_PAINT => {
             var paint: win32.PAINTSTRUCT = undefined;
@@ -254,6 +273,75 @@ fn windowProcedure(
         },
         else => return win32.DefWindowProcW(window, message, word_param, long_param),
     }
+}
+
+fn handleVirtualKey(
+    app: *App,
+    word_param: win32.WPARAM,
+    long_param: win32.LPARAM,
+) bool {
+    const key: c_uint = @truncate(word_param);
+    const repeat_count = utf16_input.messageRepeatCount(
+        @as(usize, @bitCast(long_param)),
+    );
+    switch (key) {
+        win32.VK_LEFT => for (0..repeat_count) |_| {
+            _ = app.document.moveLeft();
+        },
+        win32.VK_RIGHT => for (0..repeat_count) |_| {
+            _ = app.document.moveRight();
+        },
+        win32.VK_UP => for (0..repeat_count) |_| {
+            _ = app.document.moveVertical(.up);
+        },
+        win32.VK_DOWN => for (0..repeat_count) |_| {
+            _ = app.document.moveVertical(.down);
+        },
+        win32.VK_BACK => for (0..repeat_count) |_| {
+            _ = app.document.backspace();
+        },
+        win32.VK_DELETE => for (0..repeat_count) |_| {
+            _ = app.document.deleteForward();
+        },
+        else => return false,
+    }
+    app.utf16_decoder.reset();
+    return true;
+}
+
+fn handleCharacter(
+    app: *App,
+    word_param: win32.WPARAM,
+    long_param: win32.LPARAM,
+) void {
+    const code_unit: u16 = @truncate(word_param);
+    const repeat_count = utf16_input.messageRepeatCount(
+        @as(usize, @bitCast(long_param)),
+    );
+    if (code_unit == '\r') {
+        app.utf16_decoder.reset();
+        _ = app.document.insertRepeated("\n", repeat_count);
+        return;
+    }
+    // Backspace is handled from WM_KEYDOWN so it is applied exactly once.
+    if (code_unit == '\x08') {
+        app.utf16_decoder.reset();
+        return;
+    }
+    if (code_unit < 0x20 and code_unit != '\t') {
+        app.utf16_decoder.reset();
+        return;
+    }
+
+    const codepoint = app.utf16_decoder.push(code_unit) orelse return;
+    var encoded: [4]u8 = undefined;
+    const encoded_len = std.unicode.utf8Encode(codepoint, &encoded) catch return;
+    _ = app.document.insertRepeated(encoded[0..encoded_len], repeat_count);
+}
+
+fn requestRepaint(window: win32.HWND, app: *App) void {
+    app.dirty = true;
+    _ = win32.InvalidateRect(window, null, 0);
 }
 
 fn appForWindow(window: win32.HWND) ?*App {
@@ -329,12 +417,15 @@ fn loadInitialText(init: std.process.Init) ![]const u8 {
             init.io,
             arguments[2],
             allocator,
-            .limited(max_text_bytes + 1),
+            .limited(editing.max_text_bytes + 1),
         );
     } else if (std.mem.eql(u8, arguments[1], "-")) {
         var input_buffer: [4096]u8 = undefined;
         var input = std.Io.File.stdin().reader(init.io, &input_buffer);
-        contents = try input.interface.allocRemaining(allocator, .limited(max_text_bytes + 1));
+        contents = try input.interface.allocRemaining(
+            allocator,
+            .limited(editing.max_text_bytes + 1),
+        );
     } else if (std.mem.eql(u8, arguments[1], "--text")) {
         if (arguments.len < 3) return error.MissingTextArgument;
         contents = arguments[2];
@@ -342,22 +433,7 @@ fn loadInitialText(init: std.process.Init) ![]const u8 {
         return error.UnknownArgument;
     }
 
-    if (contents.len > max_text_bytes) return error.InputTooLong;
+    if (contents.len > editing.max_text_bytes) return error.InputTooLong;
     if (!std.unicode.utf8ValidateSlice(contents)) return error.InvalidUtf8;
-    if (std.mem.indexOfScalar(u8, contents, '\r') == null) return contents;
-
-    const normalized = try allocator.alloc(u8, contents.len);
-    var source: usize = 0;
-    var destination: usize = 0;
-    while (source < contents.len) : (source += 1) {
-        if (contents[source] == '\r') {
-            normalized[destination] = '\n';
-            destination += 1;
-            if (source + 1 < contents.len and contents[source + 1] == '\n') source += 1;
-        } else {
-            normalized[destination] = contents[source];
-            destination += 1;
-        }
-    }
-    return normalized[0..destination];
+    return contents;
 }
