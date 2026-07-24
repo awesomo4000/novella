@@ -6,3 +6,4 @@ pub const Rect = @import("surface.zig").Rect;
 pub const RunCache = @import("run_cache.zig").RunCache;
 pub const Surface = @import("surface.zig").Surface;
 pub const paintDocument = @import("document_renderer.zig").paintDocument;
+pub const paintEditorDocument = @import("document_renderer.zig").paintEditorDocument;

@@ -5,15 +5,15 @@ const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const software = @import("software_renderer");
+const editor = @import("editor");
 const FrameRequest = @import("frame_request.zig").FrameRequest;
+const keyboard_module = @import("keyboard.zig");
+const Keyboard = keyboard_module.Keyboard;
 const RunCache = software.RunCache;
 const Surface = software.Surface;
 const PixelFormat = software.PixelFormat;
 
-const xcb = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("xcb.h");
-});
+const xcb = keyboard_module.xcb;
 
 const initial_width: u16 = 900;
 const initial_height: u16 = 760;
@@ -22,6 +22,10 @@ const max_text_bytes = 64 * 1024;
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     const initial_text = try loadInitialText(init);
+    var editor_state = try editor.Editor.init(allocator, initial_text);
+    defer editor_state.deinit();
+    var caret_map = editor.CaretMap.init(allocator);
+    defer caret_map.deinit();
     const font_bytes = try font_data.loadJunicode(allocator);
     defer allocator.free(font_bytes);
     var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
@@ -37,6 +41,8 @@ pub fn main(init: std.process.Init) !void {
     defer xcb.xcb_disconnect(connection);
     if (xcb.xcb_connection_has_error(connection) != 0)
         return error.X11ConnectionFailed;
+    var keyboard = try Keyboard.init(connection);
+    defer keyboard.deinit();
 
     const setup = xcb.xcb_get_setup(connection) orelse
         return error.X11SetupUnavailable;
@@ -141,7 +147,7 @@ pub fn main(init: std.process.Init) !void {
 
     _ = xcb.xcb_map_window(connection, window);
     if (xcb.xcb_flush(connection) <= 0) return error.X11FlushFailed;
-    try software.paintDocument(&surface, initial_text, &run_cache, &glyph_engine, 1.0);
+    try paintEditor(&surface, &editor_state, &caret_map, &run_cache, &glyph_engine);
     try present(connection, window, gc, screen.*.root_depth, &surface);
 
     event_loop: while (xcb.xcb_connection_has_error(connection) == 0) {
@@ -150,11 +156,14 @@ pub fn main(init: std.process.Init) !void {
         if (queued_event == null) break;
 
         while (queued_event) |event| {
-            const close_requested = collectFrameEvent(
+            const close_requested = try collectFrameEvent(
                 &request,
                 event,
                 wm_protocols,
                 wm_delete_window,
+                &keyboard,
+                &editor_state,
+                &caret_map,
             );
             xcb.free(event);
             if (close_requested) break :event_loop;
@@ -164,7 +173,7 @@ pub fn main(init: std.process.Init) !void {
         if (request.width != surface.width or request.height != surface.height)
             try surface.resize(request.width, request.height);
         if (request.dirty) {
-            try software.paintDocument(&surface, initial_text, &run_cache, &glyph_engine, 1.0);
+            try paintEditor(&surface, &editor_state, &caret_map, &run_cache, &glyph_engine);
             try present(connection, window, gc, screen.*.root_depth, &surface);
         }
     }
@@ -177,8 +186,15 @@ fn collectFrameEvent(
     event: *const xcb.xcb_generic_event_t,
     wm_protocols: xcb.xcb_atom_t,
     wm_delete_window: xcb.xcb_atom_t,
-) bool {
+    keyboard: *Keyboard,
+    editor_state: *editor.Editor,
+    caret_map: *const editor.CaretMap,
+) !bool {
     const event_type = event.*.response_type & 0x7f;
+    if (keyboard.isXkbEvent(event_type)) {
+        try keyboard.processXkbEvent(event);
+        return false;
+    }
     switch (event_type) {
         xcb.XCB_EXPOSE => request.expose(),
         xcb.XCB_CONFIGURE_NOTIFY => {
@@ -191,10 +207,49 @@ fn collectFrameEvent(
                 message.*.format == 32 and
                 message.*.data.data32[0] == wm_delete_window;
         },
+        xcb.XCB_KEY_PRESS => {
+            const key: *const xcb.xcb_key_press_event_t = @ptrCast(event);
+            const input = keyboard.translateKeyPress(key.*.detail);
+            const changed = switch (input.kind) {
+                .none => false,
+                .quit => return true,
+                .text => try editor_state.insert(input.text()),
+                .paragraph => try editor_state.insertParagraph(),
+                .move_left => try editor_state.moveLeft(caret_map),
+                .move_right => try editor_state.moveRight(caret_map),
+                .move_up => try editor_state.moveVertically(caret_map, true),
+                .move_down => try editor_state.moveVertically(caret_map, false),
+                .delete_backward => try editor_state.deleteBackward(caret_map),
+                .delete_forward => try editor_state.deleteForward(caret_map),
+            };
+            if (changed) request.dirty = true;
+        },
         xcb.XCB_DESTROY_NOTIFY => return true,
         else => {},
     }
     return false;
+}
+
+fn paintEditor(
+    surface: *Surface,
+    editor_state: *editor.Editor,
+    caret_map: *editor.CaretMap,
+    run_cache: *RunCache,
+    glyph_engine: *software.GlyphEngine,
+) !void {
+    const cursor = editor_state.document.cursor;
+    const revision = editor_state.document.revision;
+    const text = editor_state.text();
+    try software.paintEditorDocument(
+        surface,
+        text,
+        cursor,
+        caret_map,
+        revision,
+        run_cache,
+        glyph_engine,
+        1.0,
+    );
 }
 
 fn loadInitialText(init: std.process.Init) ![]const u8 {

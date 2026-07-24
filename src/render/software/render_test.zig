@@ -7,6 +7,8 @@ const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const rasterizer = @import("freetype.zig");
 const paintDocument = @import("document_renderer.zig").paintDocument;
+const paintEditorDocument = @import("document_renderer.zig").paintEditorDocument;
+const editor = @import("editor");
 const Surface = @import("surface.zig").Surface;
 
 test "FreeType blends HarfBuzz-selected Junicode glyphs into the software surface" {
@@ -109,4 +111,47 @@ test "software geometry preserves the logical sheet at 200 percent DPI" {
     try std.testing.expectApproxEqAbs(@as(f64, 1292), geometry.paper_width, 0.000_001);
     try std.testing.expectApproxEqAbs(@as(f64, 402), geometry.content_left, 0.000_001);
     try std.testing.expectApproxEqAbs(@as(f64, 996), geometry.measure_width, 0.000_001);
+}
+
+test "editor rendering gives every trailing Return a distinct caret row" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+    var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
+    defer text_engine.deinit();
+    var run_cache = RunCache.init(allocator, &text_engine);
+    defer run_cache.deinit();
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
+    defer glyph_engine.deinit();
+    var surface = try Surface.init(allocator, .{
+        .bits_per_pixel = 32,
+        .scanline_pad = 32,
+        .lsb_first = true,
+        .red_mask = 0x00ff0000,
+        .green_mask = 0x0000ff00,
+        .blue_mask = 0x000000ff,
+    });
+    defer surface.deinit();
+    try surface.resize(900, 760);
+    var caret_map = editor.CaretMap.init(allocator);
+    defer caret_map.deinit();
+
+    const text = "end\n\n\n";
+    try paintEditorDocument(
+        &surface,
+        text,
+        text.len,
+        &caret_map,
+        42,
+        &run_cache,
+        &glyph_engine,
+        1.0,
+    );
+
+    try std.testing.expectEqual(@as(u64, 42), caret_map.revision);
+    const first_blank = caret_map.stopForOffset(4).?;
+    const second_blank = caret_map.stopForOffset(5).?;
+    const third_blank = caret_map.stopForOffset(6).?;
+    try std.testing.expect(first_blank.y < second_blank.y);
+    try std.testing.expect(second_blank.y < third_blank.y);
 }
