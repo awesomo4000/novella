@@ -193,6 +193,18 @@ test "space after a line break stays on the new visual row" {
         &glyph_engine,
         1.0,
     );
+    const full_frame = try allocator.dupe(u8, surface.pixels);
+    defer allocator.free(full_frame);
+
+    surface.paintSheet(1.0);
+    try renderer.paintEditorContent(
+        &surface,
+        document,
+        &run_cache,
+        &glyph_engine,
+        1.0,
+    );
+    try std.testing.expectEqualSlices(u8, full_frame, surface.pixels);
 
     const line_start = document.caretStopForOffset(6).?;
     const after_space = document.caretStopForOffset(7).?;

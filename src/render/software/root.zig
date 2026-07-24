@@ -7,3 +7,4 @@ pub const RunCache = @import("run_cache.zig").RunCache;
 pub const Surface = @import("surface.zig").Surface;
 pub const paintDocument = @import("document_renderer.zig").paintDocument;
 pub const paintEditor = @import("document_renderer.zig").paintEditor;
+pub const paintEditorContent = @import("document_renderer.zig").paintEditorContent;

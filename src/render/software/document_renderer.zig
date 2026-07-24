@@ -16,7 +16,16 @@ pub fn paintDocument(
     glyph_engine: *GlyphEngine,
     scale: f64,
 ) !void {
-    try paint(surface, text, text.len, null, run_cache, glyph_engine, scale);
+    try paint(
+        surface,
+        text,
+        text.len,
+        null,
+        run_cache,
+        glyph_engine,
+        scale,
+        true,
+    );
 }
 
 pub fn paintEditor(
@@ -34,6 +43,26 @@ pub fn paintEditor(
         run_cache,
         glyph_engine,
         scale,
+        true,
+    );
+}
+
+pub fn paintEditorContent(
+    surface: *Surface,
+    document: *editing.Editor,
+    run_cache: *RunCache,
+    glyph_engine: *GlyphEngine,
+    scale: f64,
+) !void {
+    try paint(
+        surface,
+        document.text(),
+        document.cursor,
+        document,
+        run_cache,
+        glyph_engine,
+        scale,
+        false,
     );
 }
 
@@ -45,8 +74,9 @@ fn paint(
     run_cache: *RunCache,
     glyph_engine: *GlyphEngine,
     scale: f64,
+    paint_sheet: bool,
 ) !void {
-    surface.paintSheet(scale);
+    if (paint_sheet) surface.paintSheet(scale);
     const geometry = sheet.scaledGeometry(surface.width, surface.height, scale);
     var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer scratch.deinit();

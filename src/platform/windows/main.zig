@@ -49,6 +49,7 @@ const App = struct {
     text_engine: shaping.Engine,
     run_cache: software.RunCache,
     glyph_engine: software.GlyphEngine,
+    background: software.Surface,
     surface: software.Surface,
     pending_width: u16 = 0,
     pending_height: u16 = 0,
@@ -73,6 +74,15 @@ const App = struct {
         );
         errdefer glyph_engine.deinit();
         const surface = try software.Surface.init(allocator, windows_pixel_format);
+        errdefer {
+            var owned = surface;
+            owned.deinit();
+        }
+        const background = try software.Surface.init(allocator, windows_pixel_format);
+        errdefer {
+            var owned = background;
+            owned.deinit();
+        }
 
         app.* = .{
             .allocator = allocator,
@@ -82,6 +92,7 @@ const App = struct {
             .text_engine = text_engine,
             .run_cache = run_cache,
             .glyph_engine = glyph_engine,
+            .background = background,
             .surface = surface,
         };
         try app.document.setText(text);
@@ -92,6 +103,7 @@ const App = struct {
     fn destroy(self: *App) void {
         const allocator = self.allocator;
         self.surface.deinit();
+        self.background.deinit();
         self.glyph_engine.deinit();
         self.run_cache.deinit();
         self.text_engine.deinit();
@@ -107,9 +119,16 @@ const App = struct {
 
     fn render(self: *App) !void {
         if (self.pending_width == 0 or self.pending_height == 0) return;
-        try self.surface.resize(self.pending_width, self.pending_height);
+        const resized = self.surface.width != self.pending_width or
+            self.surface.height != self.pending_height;
+        if (resized) {
+            try self.surface.resize(self.pending_width, self.pending_height);
+            try self.background.resize(self.pending_width, self.pending_height);
+            self.background.paintSheet(self.scale);
+        }
         if (!self.dirty) return;
-        try software.paintEditor(
+        @memcpy(self.surface.pixels, self.background.pixels);
+        try software.paintEditorContent(
             &self.surface,
             &self.document,
             &self.run_cache,

@@ -35,7 +35,7 @@ pub const Rect = struct {
 pub const Surface = struct {
     allocator: std.mem.Allocator,
     format: PixelFormat,
-    pixels: []u8 = &.{},
+    pixels: []align(4) u8 = &.{},
     width: u16 = 0,
     height: u16 = 0,
     stride: usize = 0,
@@ -56,10 +56,11 @@ pub const Surface = struct {
         const padded_bits = std.mem.alignForward(usize, row_bits, self.format.scanline_pad);
         const stride = padded_bits / 8;
         const byte_count = try std.math.mul(usize, stride, height);
-        const replacement = try self.allocator.alloc(u8, byte_count);
-        errdefer self.allocator.free(replacement);
+        const replacement = if (self.pixels.len > 0)
+            try self.allocator.realloc(self.pixels, byte_count)
+        else
+            try self.allocator.alignedAlloc(u8, .@"4", byte_count);
         @memset(replacement, 0);
-        if (self.pixels.len > 0) self.allocator.free(self.pixels);
         self.pixels = replacement;
         self.width = width;
         self.height = height;
@@ -83,6 +84,20 @@ pub const Surface = struct {
 
         const pixel = self.pack(color);
         const bytes_per_pixel = self.format.bits_per_pixel / 8;
+        if (bytes_per_pixel == 4 and self.format.lsb_first) {
+            var y: usize = @intCast(top);
+            while (y < @as(usize, @intCast(bottom))) : (y += 1) {
+                const start = y * self.stride +
+                    @as(usize, @intCast(left)) * bytes_per_pixel;
+                const byte_len = @as(usize, @intCast(right - left)) * bytes_per_pixel;
+                const row = std.mem.bytesAsSlice(
+                    u32,
+                    @as([]align(@alignOf(u32)) u8, @alignCast(self.pixels[start .. start + byte_len])),
+                );
+                @memset(row, pixel);
+            }
+            return;
+        }
         var y: usize = @intCast(top);
         while (y < @as(usize, @intCast(bottom))) : (y += 1) {
             var offset = y * self.stride + @as(usize, @intCast(left)) * bytes_per_pixel;
