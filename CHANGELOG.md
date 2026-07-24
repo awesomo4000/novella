@@ -2,6 +2,11 @@
 
 # Changelog
 
+## 07/24/2026
+
+- Scoped the vendored XCB and Xau feature-test macros to Linux so the native
+  macOS X11 build retains required Darwin socket and compatibility APIs.
+
 ## 07/23/2026
 
 - Extracted the X11 software surface, HarfBuzz run cache, FreeType glyph cache,

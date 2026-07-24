@@ -13,6 +13,15 @@ pub fn build(b: *std.Build) void {
     } else .{};
     const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
+    const x11_c_flags: []const []const u8 = if (target.result.os.tag == .linux)
+        &.{
+            "-std=c99",
+            "-D_DEFAULT_SOURCE=1",
+            "-D_POSIX_C_SOURCE=200809L",
+            "-DHAVE_CONFIG_H=1",
+        }
+    else
+        &.{ "-std=c99", "-DHAVE_CONFIG_H=1" };
 
     const novella = b.addModule("novella", .{
         .root_source_file = b.path("src/root.zig"),
@@ -136,12 +145,7 @@ pub fn build(b: *std.Build) void {
             "AuGetBest.c",
             "AuRead.c",
         },
-        .flags = &.{
-            "-std=c99",
-            "-D_DEFAULT_SOURCE=1",
-            "-D_POSIX_C_SOURCE=200809L",
-            "-DHAVE_CONFIG_H=1",
-        },
+        .flags = x11_c_flags,
     });
 
     const xcb = b.addLibrary(.{
@@ -246,12 +250,7 @@ pub fn build(b: *std.Build) void {
             "bigreq.c",
             "xc_misc.c",
         },
-        .flags = &.{
-            "-std=c99",
-            "-D_DEFAULT_SOURCE=1",
-            "-D_POSIX_C_SOURCE=200809L",
-            "-DHAVE_CONFIG_H=1",
-        },
+        .flags = x11_c_flags,
     });
 
     const x11_module = b.createModule(.{
