@@ -43,6 +43,7 @@ const windows_pixel_format = software.PixelFormat{
 const App = struct {
     allocator: std.mem.Allocator,
     document: editing.Editor,
+    caret_map: editing.CaretMap,
     utf16_decoder: utf16_input.Decoder = .{},
     scale: f64,
     font_bytes: []u8,
@@ -60,6 +61,10 @@ const App = struct {
         if (!(scale > 0) or !std.math.isFinite(scale)) return error.InvalidDisplayScale;
         const app = try allocator.create(App);
         errdefer allocator.destroy(app);
+        var document = try editing.Editor.init(allocator, text);
+        errdefer document.deinit();
+        var caret_map = editing.CaretMap.init(allocator);
+        errdefer caret_map.deinit();
         const font_bytes = try font_data.loadJunicode(allocator);
         errdefer allocator.free(font_bytes);
         const pixel_font_size = sheet.body_font_size * scale;
@@ -86,7 +91,8 @@ const App = struct {
 
         app.* = .{
             .allocator = allocator,
-            .document = .{},
+            .document = document,
+            .caret_map = caret_map,
             .scale = scale,
             .font_bytes = font_bytes,
             .text_engine = text_engine,
@@ -95,7 +101,6 @@ const App = struct {
             .background = background,
             .surface = surface,
         };
-        try app.document.setText(text);
         app.run_cache.engine = &app.text_engine;
         return app;
     }
@@ -108,6 +113,8 @@ const App = struct {
         self.run_cache.deinit();
         self.text_engine.deinit();
         allocator.free(self.font_bytes);
+        self.caret_map.deinit();
+        self.document.deinit();
         allocator.destroy(self);
     }
 
@@ -131,6 +138,7 @@ const App = struct {
         try software.paintEditorContent(
             &self.surface,
             &self.document,
+            &self.caret_map,
             &self.run_cache,
             &self.glyph_engine,
             self.scale,
@@ -305,22 +313,22 @@ fn handleVirtualKey(
     );
     switch (key) {
         win32.VK_LEFT => for (0..repeat_count) |_| {
-            _ = app.document.moveLeft();
+            recordEdit(app, app.document.moveLeft(&app.caret_map));
         },
         win32.VK_RIGHT => for (0..repeat_count) |_| {
-            _ = app.document.moveRight();
+            recordEdit(app, app.document.moveRight(&app.caret_map));
         },
         win32.VK_UP => for (0..repeat_count) |_| {
-            _ = app.document.moveVertical(.up);
+            recordEdit(app, app.document.moveVertical(&app.caret_map, .up));
         },
         win32.VK_DOWN => for (0..repeat_count) |_| {
-            _ = app.document.moveVertical(.down);
+            recordEdit(app, app.document.moveVertical(&app.caret_map, .down));
         },
         win32.VK_BACK => for (0..repeat_count) |_| {
-            _ = app.document.backspace();
+            recordEdit(app, app.document.backspace(&app.caret_map));
         },
         win32.VK_DELETE => for (0..repeat_count) |_| {
-            _ = app.document.deleteForward();
+            recordEdit(app, app.document.deleteForward(&app.caret_map));
         },
         else => return false,
     }
@@ -339,7 +347,7 @@ fn handleCharacter(
     );
     if (code_unit == '\r') {
         app.utf16_decoder.reset();
-        _ = app.document.insertRepeated("\n", repeat_count);
+        recordEdit(app, app.document.insertRepeated("\n", repeat_count));
         return;
     }
     // Backspace is handled from WM_KEYDOWN so it is applied exactly once.
@@ -355,7 +363,14 @@ fn handleCharacter(
     const codepoint = app.utf16_decoder.push(code_unit) orelse return;
     var encoded: [4]u8 = undefined;
     const encoded_len = std.unicode.utf8Encode(codepoint, &encoded) catch return;
-    _ = app.document.insertRepeated(encoded[0..encoded_len], repeat_count);
+    recordEdit(app, app.document.insertRepeated(encoded[0..encoded_len], repeat_count));
+}
+
+fn recordEdit(app: *App, result: anyerror!bool) void {
+    _ = result catch {
+        app.render_failed = true;
+        return;
+    };
 }
 
 fn requestRepaint(window: win32.HWND, app: *App) void {

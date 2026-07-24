@@ -22,6 +22,20 @@ pub fn build(b: *std.Build) void {
         }
     else
         &.{ "-std=c99", "-DHAVE_CONFIG_H=1" };
+    const xkb_c_flags: []const []const u8 = if (target.result.os.tag == .linux)
+        &.{
+            "-std=c11",
+            "-D_GNU_SOURCE=1",
+            "-DHAVE_CONFIG_H=1",
+            "-fno-strict-aliasing",
+        }
+    else
+        &.{
+            "-std=c11",
+            "-D_DARWIN_C_SOURCE=1",
+            "-DHAVE_CONFIG_H=1",
+            "-fno-strict-aliasing",
+        };
 
     const novella = b.addModule("novella", .{
         .root_source_file = b.path("src/root.zig"),
@@ -39,7 +53,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const test_step = b.step("test", "Run the justification and shared application tests");
-
+    const document_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/app/document.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(document_tests).step);
     const harfbuzz = b.addLibrary(.{
         .name = "harfbuzz-vendored",
         .linkage = .static,
@@ -256,9 +277,92 @@ pub fn build(b: *std.Build) void {
             "xproto.c",
             "bigreq.c",
             "xc_misc.c",
+            "xkb.c",
         },
         .flags = x11_c_flags,
     });
+
+    const xkbcommon = b.addLibrary(.{
+        .name = "xkbcommon-vendored",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    xkbcommon.root_module.link_libc = true;
+    xkbcommon.root_module.addIncludePath(b.path("vendor/xkbcommon"));
+    xkbcommon.root_module.addIncludePath(b.path("vendor/xkbcommon/src"));
+    xkbcommon.root_module.addIncludePath(b.path("vendor/xkbcommon/include"));
+    xkbcommon.root_module.addCSourceFiles(.{
+        .root = b.path("vendor/xkbcommon"),
+        .files = &.{
+            "src/compose/parser.c",
+            "src/compose/paths.c",
+            "src/compose/state.c",
+            "src/compose/table.c",
+            "src/xkbcomp/action.c",
+            "src/xkbcomp/ast-build.c",
+            "src/xkbcomp/compat.c",
+            "src/xkbcomp/expr.c",
+            "src/xkbcomp/include.c",
+            "src/xkbcomp/keycodes.c",
+            "src/xkbcomp/keymap.c",
+            "src/xkbcomp/keymap-dump.c",
+            "src/xkbcomp/keywords.c",
+            "src/xkbcomp/parser.c",
+            "src/xkbcomp/rules.c",
+            "src/xkbcomp/scanner.c",
+            "src/xkbcomp/symbols.c",
+            "src/xkbcomp/types.c",
+            "src/xkbcomp/vmod.c",
+            "src/xkbcomp/xkbcomp.c",
+            "src/atom.c",
+            "src/context.c",
+            "src/context-priv.c",
+            "src/keysym.c",
+            "src/keysym-case-mappings.c",
+            "src/keysym-utf.c",
+            "src/keymap.c",
+            "src/keymap-compare.c",
+            "src/keymap-priv.c",
+            "src/rmlvo.c",
+            "src/scanner-utils.c",
+            "src/state.c",
+            "src/text.c",
+            "src/utf8.c",
+            "src/utf8-decoding.c",
+            "src/utils.c",
+            "src/utils-paths.c",
+        },
+        .flags = xkb_c_flags,
+    });
+
+    const xkbcommon_x11 = b.addLibrary(.{
+        .name = "xkbcommon-x11-vendored",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    xkbcommon_x11.root_module.link_libc = true;
+    xkbcommon_x11.root_module.addIncludePath(b.path("vendor/xkbcommon"));
+    xkbcommon_x11.root_module.addIncludePath(b.path("vendor/xkbcommon/src"));
+    xkbcommon_x11.root_module.addIncludePath(b.path("vendor/xkbcommon/include"));
+    xkbcommon_x11.root_module.addIncludePath(b.path("vendor/xcb/include"));
+    xkbcommon_x11.root_module.addIncludePath(b.path("vendor/xcb/src"));
+    xkbcommon_x11.root_module.addCSourceFiles(.{
+        .root = b.path("vendor/xkbcommon"),
+        .files = &.{
+            "src/x11/keymap.c",
+            "src/x11/state.c",
+            "src/x11/util.c",
+        },
+        .flags = xkb_c_flags,
+    });
+    xkbcommon_x11.root_module.linkLibrary(xkbcommon);
+    xkbcommon_x11.root_module.linkLibrary(xcb);
 
     const x11_module = b.createModule(.{
         .root_source_file = b.path("src/platform/x11/main.zig"),
@@ -270,11 +374,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "text_engine", .module = text_engine },
             .{ .name = "font_data", .module = font_data },
             .{ .name = "software_renderer", .module = software_renderer },
+            .{ .name = "editor", .module = editor },
         },
     });
     x11_module.addIncludePath(b.path("vendor/xcb/src"));
+    x11_module.addIncludePath(b.path("vendor/xcb/include"));
+    x11_module.addIncludePath(b.path("vendor/xkbcommon/include"));
     x11_module.linkLibrary(xcb);
     x11_module.linkLibrary(xau);
+    x11_module.linkLibrary(xkbcommon_x11);
 
     const software_render_test_module = b.createModule(.{
         .root_source_file = b.path("src/render/software/render_test.zig"),

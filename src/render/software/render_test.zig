@@ -21,16 +21,8 @@ test "FreeType blends HarfBuzz-selected Junicode glyphs into the software surfac
     var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
 
-    var surface = try Surface.init(allocator, .{
-        .bits_per_pixel = 32,
-        .scanline_pad = 32,
-        .lsb_first = true,
-        .red_mask = 0x00ff0000,
-        .green_mask = 0x0000ff00,
-        .blue_mask = 0x000000ff,
-    });
+    var surface = try testSurface(allocator, 240, 80);
     defer surface.deinit();
-    try surface.resize(240, 80);
     surface.fill(sheet.paper);
     const blank = try allocator.dupe(u8, surface.pixels);
     defer allocator.free(blank);
@@ -77,16 +69,8 @@ test "complete document rendering is deterministic and reuses caches" {
     defer run_cache.deinit();
     var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
-    var surface = try Surface.init(allocator, .{
-        .bits_per_pixel = 32,
-        .scanline_pad = 32,
-        .lsb_first = true,
-        .red_mask = 0x00ff0000,
-        .green_mask = 0x0000ff00,
-        .blue_mask = 0x000000ff,
-    });
+    var surface = try testSurface(allocator, 900, 760);
     defer surface.deinit();
-    try surface.resize(900, 760);
 
     const text =
         "A complete paragraph is shaped with HarfBuzz, justified by Novella, " ++
@@ -121,37 +105,26 @@ test "explicit empty paragraphs receive distinct visual caret rows" {
     defer text_engine.deinit();
     var run_cache = RunCache.init(allocator, &text_engine);
     defer run_cache.deinit();
-    var glyph_engine = try rasterizer.Engine.init(
-        allocator,
-        font_bytes,
-        sheet.body_font_size,
-    );
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
-    var surface = try Surface.init(allocator, .{
-        .bits_per_pixel = 32,
-        .scanline_pad = 32,
-        .lsb_first = true,
-        .red_mask = 0x00ff0000,
-        .green_mask = 0x0000ff00,
-        .blue_mask = 0x000000ff,
-    });
+    var surface = try testSurface(allocator, 900, 760);
     defer surface.deinit();
-    try surface.resize(900, 760);
+    var document = try editing.Editor.init(allocator, "first\n\nsecond");
+    defer document.deinit();
+    var caret_map = editing.CaretMap.init(allocator);
+    defer caret_map.deinit();
 
-    const document = try allocator.create(editing.Editor);
-    defer allocator.destroy(document);
-    document.* = .{};
-    try document.setText("first\n\nsecond");
     try renderer.paintEditor(
         &surface,
-        document,
+        &document,
+        &caret_map,
         &run_cache,
         &glyph_engine,
         1.0,
     );
 
-    const first_blank = document.caretStopForOffset(6).?;
-    const second_blank = document.caretStopForOffset(7).?;
+    const first_blank = caret_map.stopForOffset(6).?;
+    const second_blank = caret_map.stopForOffset(7).?;
     try std.testing.expectEqual(@as(usize, 1), first_blank.row);
     try std.testing.expectEqual(@as(usize, 2), second_blank.row);
     try std.testing.expect(second_blank.baseline > first_blank.baseline);
@@ -165,30 +138,19 @@ test "space after a line break stays on the new visual row" {
     defer text_engine.deinit();
     var run_cache = RunCache.init(allocator, &text_engine);
     defer run_cache.deinit();
-    var glyph_engine = try rasterizer.Engine.init(
-        allocator,
-        font_bytes,
-        sheet.body_font_size,
-    );
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
-    var surface = try Surface.init(allocator, .{
-        .bits_per_pixel = 32,
-        .scanline_pad = 32,
-        .lsb_first = true,
-        .red_mask = 0x00ff0000,
-        .green_mask = 0x0000ff00,
-        .blue_mask = 0x000000ff,
-    });
+    var surface = try testSurface(allocator, 900, 760);
     defer surface.deinit();
-    try surface.resize(900, 760);
+    var document = try editing.Editor.init(allocator, "first\n \n");
+    defer document.deinit();
+    var caret_map = editing.CaretMap.init(allocator);
+    defer caret_map.deinit();
 
-    const document = try allocator.create(editing.Editor);
-    defer allocator.destroy(document);
-    document.* = .{};
-    try document.setText("first\n \n");
     try renderer.paintEditor(
         &surface,
-        document,
+        &document,
+        &caret_map,
         &run_cache,
         &glyph_engine,
         1.0,
@@ -199,18 +161,68 @@ test "space after a line break stays on the new visual row" {
     surface.paintSheet(1.0);
     try renderer.paintEditorContent(
         &surface,
-        document,
+        &document,
+        &caret_map,
         &run_cache,
         &glyph_engine,
         1.0,
     );
     try std.testing.expectEqualSlices(u8, full_frame, surface.pixels);
 
-    const line_start = document.caretStopForOffset(6).?;
-    const after_space = document.caretStopForOffset(7).?;
-    const following_line = document.caretStopForOffset(8).?;
+    const line_start = caret_map.stopForOffset(6).?;
+    const after_space = caret_map.stopForOffset(7).?;
+    const following_line = caret_map.stopForOffset(8).?;
     try std.testing.expectEqual(line_start.row, after_space.row);
     try std.testing.expect(after_space.x > line_start.x);
     try std.testing.expectEqual(line_start.row + 1, following_line.row);
     try std.testing.expect(following_line.baseline > after_space.baseline);
+}
+
+test "every trailing Return receives a distinct caret row" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+    var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
+    defer text_engine.deinit();
+    var run_cache = RunCache.init(allocator, &text_engine);
+    defer run_cache.deinit();
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
+    defer glyph_engine.deinit();
+    var surface = try testSurface(allocator, 900, 760);
+    defer surface.deinit();
+    var document = try editing.Editor.init(allocator, "end\n\n\n");
+    defer document.deinit();
+    var caret_map = editing.CaretMap.init(allocator);
+    defer caret_map.deinit();
+
+    try renderer.paintEditor(
+        &surface,
+        &document,
+        &caret_map,
+        &run_cache,
+        &glyph_engine,
+        1.0,
+    );
+
+    const first_blank = caret_map.stopForOffset(4).?;
+    const second_blank = caret_map.stopForOffset(5).?;
+    const third_blank = caret_map.stopForOffset(6).?;
+    try std.testing.expectEqual(first_blank.row + 1, second_blank.row);
+    try std.testing.expectEqual(second_blank.row + 1, third_blank.row);
+    try std.testing.expect(first_blank.baseline < second_blank.baseline);
+    try std.testing.expect(second_blank.baseline < third_blank.baseline);
+}
+
+fn testSurface(allocator: std.mem.Allocator, width: u16, height: u16) !Surface {
+    var surface = try Surface.init(allocator, .{
+        .bits_per_pixel = 32,
+        .scanline_pad = 32,
+        .lsb_first = true,
+        .red_mask = 0x00ff0000,
+        .green_mask = 0x0000ff00,
+        .blue_mask = 0x000000ff,
+    });
+    errdefer surface.deinit();
+    try surface.resize(width, height);
+    return surface;
 }

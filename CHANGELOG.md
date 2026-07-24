@@ -6,6 +6,15 @@
 
 - Scoped the vendored XCB and Xau feature-test macros to Linux so the native
   macOS X11 build retains required Darwin socket and compatibility APIs.
+- Added the X11 editing path with a dynamic UTF-8 gap-buffer document,
+  HarfBuzz-cluster caret boundaries, insertion-point painting, horizontal and
+  vertical arrows, Return, Backspace, and forward Delete.
+- Vendored and statically linked libxkbcommon 1.13.2 plus the XCB XKB protocol
+  binding for server-defined layouts, modifiers, UTF-8 text, dead keys,
+  Compose sequences, and Ctrl-Q or Super-Q exit handling.
+- Unified the Win32 and X11 editors around the dynamic gap-buffer document and
+  a shared row-aware caret map while retaining batched key repeats,
+  consecutive-Return handling, and content-only software repainting.
 
 ## 07/23/2026
 
