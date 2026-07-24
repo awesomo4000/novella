@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
-const _frame_request = @import("frame_request.zig");
 const RunCache = @import("run_cache.zig").RunCache;
 const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
 const rasterizer = @import("freetype.zig");
+const paintDocument = @import("document_renderer.zig").paintDocument;
 const Surface = @import("surface.zig").Surface;
 
-comptime {
-    _ = _frame_request;
-}
-
-test "FreeType blends HarfBuzz-selected Junicode glyphs into the X11 surface" {
+test "FreeType blends HarfBuzz-selected Junicode glyphs into the software surface" {
     const allocator = std.testing.allocator;
     const font_bytes = try font_data.loadJunicode(allocator);
     defer allocator.free(font_bytes);
@@ -53,7 +49,7 @@ test "FreeType blends HarfBuzz-selected Junicode glyphs into the X11 surface" {
     try std.testing.expectEqualSlices(u8, first_render, surface.pixels);
 }
 
-test "X11 run cache reuses shapes for equal text" {
+test "run cache reuses shapes for equal text" {
     const allocator = std.testing.allocator;
     const font_bytes = try font_data.loadJunicode(allocator);
     defer allocator.free(font_bytes);
@@ -67,4 +63,50 @@ test "X11 run cache reuses shapes for equal text" {
     const second = try run_cache.shape(&duplicate);
 
     try std.testing.expectEqual(first.glyphs.ptr, second.glyphs.ptr);
+}
+
+test "complete document rendering is deterministic and reuses caches" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+    var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
+    defer text_engine.deinit();
+    var run_cache = RunCache.init(allocator, &text_engine);
+    defer run_cache.deinit();
+    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
+    defer glyph_engine.deinit();
+    var surface = try Surface.init(allocator, .{
+        .bits_per_pixel = 32,
+        .scanline_pad = 32,
+        .lsb_first = true,
+        .red_mask = 0x00ff0000,
+        .green_mask = 0x0000ff00,
+        .blue_mask = 0x000000ff,
+    });
+    defer surface.deinit();
+    try surface.resize(900, 760);
+
+    const text =
+        "A complete paragraph is shaped with HarfBuzz, justified by Novella, " ++
+        "and rasterized through the shared FreeType software renderer.";
+    try paintDocument(&surface, text, &run_cache, &glyph_engine, 1.0);
+    const first_frame = try allocator.dupe(u8, surface.pixels);
+    defer allocator.free(first_frame);
+    const run_count = run_cache.runs.count();
+    const glyph_count = glyph_engine.cachedGlyphCount();
+    try std.testing.expect(run_count > 0);
+    try std.testing.expect(glyph_count > 0);
+
+    try paintDocument(&surface, text, &run_cache, &glyph_engine, 1.0);
+    try std.testing.expectEqual(run_count, run_cache.runs.count());
+    try std.testing.expectEqual(glyph_count, glyph_engine.cachedGlyphCount());
+    try std.testing.expectEqualSlices(u8, first_frame, surface.pixels);
+}
+
+test "software geometry preserves the logical sheet at 200 percent DPI" {
+    const geometry = sheet.scaledGeometry(1800, 1520, 2.0);
+    try std.testing.expectApproxEqAbs(@as(f64, 254), geometry.paper_left, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1292), geometry.paper_width, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 402), geometry.content_left, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 996), geometry.measure_width, 0.000_001);
 }

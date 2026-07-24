@@ -13,15 +13,15 @@ pub const PixelFormat = struct {
 
     pub fn validate(self: PixelFormat) !void {
         if (self.bits_per_pixel != 24 and self.bits_per_pixel != 32)
-            return error.UnsupportedX11BitsPerPixel;
+            return error.UnsupportedBitsPerPixel;
         if (self.scanline_pad != 8 and self.scanline_pad != 16 and self.scanline_pad != 32)
-            return error.UnsupportedX11ScanlinePad;
+            return error.UnsupportedScanlinePad;
         if (self.red_mask == 0 or self.green_mask == 0 or self.blue_mask == 0)
-            return error.UnsupportedX11VisualMasks;
+            return error.UnsupportedColorMasks;
         if ((self.red_mask & self.green_mask) != 0 or
             (self.red_mask & self.blue_mask) != 0 or
             (self.green_mask & self.blue_mask) != 0)
-            return error.UnsupportedX11VisualMasks;
+            return error.UnsupportedColorMasks;
     }
 };
 
@@ -94,9 +94,9 @@ pub const Surface = struct {
         }
     }
 
-    pub fn paintSheet(self: *Surface) void {
+    pub fn paintSheet(self: *Surface, scale: f64) void {
         self.fill(sheet.desktop);
-        const geometry = sheet.geometry(self.width, self.height);
+        const geometry = sheet.scaledGeometry(self.width, self.height, scale);
         const paper_rect = rectFromFloats(
             geometry.paper_left,
             geometry.paper_top,

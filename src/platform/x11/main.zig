@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
-const novella = @import("novella");
 const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const font_data = @import("font_data");
-const rasterizer = @import("freetype.zig");
+const software = @import("software_renderer");
 const FrameRequest = @import("frame_request.zig").FrameRequest;
-const RunCache = @import("run_cache.zig").RunCache;
-const Surface = @import("surface.zig").Surface;
-const PixelFormat = @import("surface.zig").PixelFormat;
+const RunCache = software.RunCache;
+const Surface = software.Surface;
+const PixelFormat = software.PixelFormat;
 
 const xcb = @cImport({
     @cInclude("stdlib.h");
@@ -29,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     defer text_engine.deinit();
     var run_cache = RunCache.init(allocator, &text_engine);
     defer run_cache.deinit();
-    var glyph_engine = try rasterizer.Engine.init(allocator, font_bytes, sheet.body_font_size);
+    var glyph_engine = try software.GlyphEngine.init(allocator, font_bytes, sheet.body_font_size);
     defer glyph_engine.deinit();
 
     var screen_number: c_int = 0;
@@ -142,7 +141,7 @@ pub fn main(init: std.process.Init) !void {
 
     _ = xcb.xcb_map_window(connection, window);
     if (xcb.xcb_flush(connection) <= 0) return error.X11FlushFailed;
-    try paintDocument(&surface, initial_text, &run_cache, &glyph_engine);
+    try software.paintDocument(&surface, initial_text, &run_cache, &glyph_engine, 1.0);
     try present(connection, window, gc, screen.*.root_depth, &surface);
 
     event_loop: while (xcb.xcb_connection_has_error(connection) == 0) {
@@ -165,7 +164,7 @@ pub fn main(init: std.process.Init) !void {
         if (request.width != surface.width or request.height != surface.height)
             try surface.resize(request.width, request.height);
         if (request.dirty) {
-            try paintDocument(&surface, initial_text, &run_cache, &glyph_engine);
+            try software.paintDocument(&surface, initial_text, &run_cache, &glyph_engine, 1.0);
             try present(connection, window, gc, screen.*.root_depth, &surface);
         }
     }
@@ -255,77 +254,6 @@ fn loadInitialText(init: std.process.Init) ![]const u8 {
         }
     }
     return normalized[0..destination];
-}
-
-fn paintDocument(
-    surface: *Surface,
-    text: []const u8,
-    run_cache: *RunCache,
-    glyph_engine: *rasterizer.Engine,
-) !void {
-    surface.paintSheet();
-    const geometry = sheet.geometry(surface.width, surface.height);
-    var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-    defer scratch.deinit();
-    const allocator = scratch.allocator();
-
-    var baseline = geometry.first_baseline_top;
-    var caret_x = geometry.content_left;
-    var caret_y = baseline;
-    var paragraph_start: usize = 0;
-    while (paragraph_start <= text.len) {
-        const rest = text[paragraph_start..];
-        const separator = std.mem.indexOfScalar(u8, rest, '\n');
-        const paragraph_end = if (separator) |offset| paragraph_start + offset else text.len;
-        const paragraph = text[paragraph_start..paragraph_end];
-        if (paragraph.len > 0) {
-            var layout = try novella.Layout.init(
-                allocator,
-                paragraph,
-                geometry.measure_width,
-                .{ .context = run_cache, .measure_fn = measureBodyText },
-                .{},
-            );
-            defer layout.deinit(allocator);
-
-            for (layout.lines) |line| {
-                if (baseline > geometry.paper_top + geometry.paper_height - 62.0) break;
-                var x = geometry.content_left;
-                const words = layout.words[line.word_start..line.word_end];
-                for (words, 0..) |word, index| {
-                    const run = try run_cache.shape(word.text);
-                    try glyph_engine.drawRun(surface, run, x, baseline, sheet.ink);
-                    x += word.width;
-                    if (index + 1 < words.len and words[index + 1].space_before)
-                        x += line.space_width;
-                }
-                caret_x = x;
-                caret_y = baseline;
-                baseline += sheet.line_height;
-            }
-            baseline += sheet.paragraph_gap;
-        } else if (separator != null) {
-            baseline += sheet.line_height + sheet.paragraph_gap;
-            caret_x = geometry.content_left;
-            caret_y = baseline;
-        }
-        if (separator == null) break;
-        paragraph_start = paragraph_end + 1;
-    }
-
-    surface.fillRect(.{
-        .x = @intFromFloat(@round(caret_x - 2.0)),
-        .y = @intFromFloat(@round(caret_y - 18.0)),
-        .width = 2,
-        .height = 22,
-    }, sheet.caret);
-}
-
-fn measureBodyText(context: ?*anyopaque, source: []const u8) f64 {
-    const state = context orelse return 0;
-    const run_cache: *RunCache = @ptrCast(@alignCast(state));
-    const run = run_cache.shape(source) catch return 0;
-    return run.advance;
 }
 
 fn findScreen(setup: *const xcb.xcb_setup_t, screen_number: c_int) ?*xcb.xcb_screen_t {

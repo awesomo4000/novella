@@ -61,6 +61,14 @@ pub fn geometry(width: f64, height: f64) Geometry {
     };
 }
 
+pub fn scaledGeometry(width: f64, height: f64, scale: f64) Geometry {
+    std.debug.assert(scale > 0 and std.math.isFinite(scale));
+    var result = geometry(width / scale, height / scale);
+    inline for (std.meta.fields(Geometry)) |field|
+        @field(result, field.name) *= scale;
+    return result;
+}
+
 test "shared sheet geometry matches the 900 by 760 baseline" {
     const result = geometry(900, 760);
     try std.testing.expectApproxEqAbs(@as(f64, 127), result.paper_left, 0.000_001);
@@ -70,4 +78,12 @@ test "shared sheet geometry matches the 900 by 760 baseline" {
     try std.testing.expectApproxEqAbs(@as(f64, 201), result.content_left, 0.000_001);
     try std.testing.expectApproxEqAbs(@as(f64, 498), result.measure_width, 0.000_001);
     try std.testing.expectApproxEqAbs(@as(f64, 74), result.first_baseline_top, 0.000_001);
+}
+
+test "scaled geometry preserves logical proportions in physical pixels" {
+    const result = scaledGeometry(1125, 950, 1.25);
+    try std.testing.expectApproxEqAbs(@as(f64, 158.75), result.paper_left, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 807.5), result.paper_width, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 251.25), result.content_left, 0.000_001);
+    try std.testing.expectApproxEqAbs(@as(f64, 622.5), result.measure_width, 0.000_001);
 }

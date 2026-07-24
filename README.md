@@ -3,7 +3,7 @@
 # novella
 
 `novella` is a DOM-free Zig 0.16 library for publication-style paragraph
-justification, accompanied by native macOS and raw-X11 writing sheets. Its
+justification, accompanied by native macOS, Win32, and raw-X11 writing sheets. Its
 whole-paragraph line breaker is derived from the TeX-style core in
 [`justif`](https://github.com/lyallcooper/justif): every feasible sequence of
 breaks is considered, and adjacent line fitness participates in the result.
@@ -65,20 +65,27 @@ zig build run -- --text "The first sentence was already waiting."
 
 ### Windows platform sample
 
-On Windows, the default build installs a native Unicode GUI application with a
-minimal resizable window. The first-stage target deliberately contains no
-editor or renderer code; it establishes the isolated Win32 application
-boundary before the macOS writing sheet is extracted into shared modules.
+On Windows, the default build installs a native Unicode GUI application that
+displays the same justified Junicode sheet as X11. HarfBuzz shaping, FreeType
+glyph caching, sheet painting, and the retained software surface are shared
+with X11; Win32 owns only the native window, message loop, and GDI DIB
+presentation. Background erasure is suppressed so resize and expose repaint
+completed retained frames without a white intermediate clear.
 
-The application requires Windows 10 version 1607 or newer:
+x86 and x86-64 builds target Windows 7 or newer. Windows 7 installations need
+Microsoft's Universal CRT update, which supplies the API-set DLLs imported by
+Zig's C/C++ runtime. ARM64 builds require Windows 10 or newer:
 
 ```sh
 zig build
 zig build run
+zig build run -- --text "The first sentence was already waiting."
 ```
 
 The explicit platform steps are `zig build windows` and
-`zig build run-windows`.
+`zig build run-windows`. Initial UTF-8 text accepts the same `-f`, stdin, and
+`--text` forms as X11. The Windows and X11 sheets are currently display-only;
+interactive native input follows the shared editor extraction.
 
 ### X11 platform sample
 

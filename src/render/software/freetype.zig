@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 const std = @import("std");
+const builtin = @import("builtin");
 const sheet = @import("sheet");
 const shaping = @import("text_engine");
 const Surface = @import("surface.zig").Surface;
 
 const ft = @cImport({
+    if (builtin.cpu.arch == .x86 and builtin.os.tag == .windows)
+        @cDefine("_X86_", "1");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
 });

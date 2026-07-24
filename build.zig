@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const default_target: std.Target.Query = if (builtin.os.tag == .windows) .{
         .cpu_arch = builtin.cpu.arch,
         .os_tag = .windows,
-        .os_version_min = .{ .windows = .win10_rs1 },
+        .os_version_min = .{ .windows = if (builtin.cpu.arch == .aarch64) .win10_rs1 else .win7 },
         .os_version_max = .{ .windows = std.Target.Os.WindowsVersion.latest },
         .abi = builtin.abi,
     } else .{};
@@ -117,34 +117,6 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_command.step);
     }
 
-    if (target.result.os.tag == .windows) {
-        const windows_module = b.createModule(.{
-            .root_source_file = b.path("src/platform/windows/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        windows_module.link_libc = true;
-        windows_module.linkSystemLibrary("user32", .{});
-        const windows_app = b.addExecutable(.{
-            .name = "novella",
-            .root_module = windows_module,
-            .win32_manifest = b.path("src/platform/windows/novella.manifest"),
-        });
-        windows_app.subsystem = .windows;
-
-        const install_windows = b.addInstallArtifact(windows_app, .{});
-        b.getInstallStep().dependOn(&install_windows.step);
-        const windows_step = b.step("windows", "Build the native Windows application");
-        windows_step.dependOn(&install_windows.step);
-
-        const run_windows_command = b.addRunArtifact(windows_app);
-        run_windows_command.step.dependOn(&install_windows.step);
-        const run_windows_step = b.step("run-windows", "Run the native Windows application");
-        run_windows_step.dependOn(&run_windows_command.step);
-        const run_step = b.step("run", "Run the native Windows application");
-        run_step.dependOn(&run_windows_command.step);
-    }
-
     const xau = b.addLibrary(.{
         .name = "Xau-vendored",
         .linkage = .static,
@@ -164,7 +136,12 @@ pub fn build(b: *std.Build) void {
             "AuGetBest.c",
             "AuRead.c",
         },
-        .flags = &.{ "-std=c99", "-DHAVE_CONFIG_H=1" },
+        .flags = &.{
+            "-std=c99",
+            "-D_DEFAULT_SOURCE=1",
+            "-D_POSIX_C_SOURCE=200809L",
+            "-DHAVE_CONFIG_H=1",
+        },
     });
 
     const xcb = b.addLibrary(.{
@@ -185,7 +162,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     freetype.root_module.link_libc = true;
-    freetype.root_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
+    freetype.root_module.addIncludePath(b.path("src/render/software/freetype_config"));
     freetype.root_module.addIncludePath(b.path("vendor/freetype/include"));
     freetype.root_module.addCSourceFiles(.{
         .root = b.path("vendor/freetype"),
@@ -201,6 +178,56 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{ "-std=c99", "-DFT2_BUILD_LIBRARY" },
     });
+
+    const software_renderer = b.createModule(.{
+        .root_source_file = b.path("src/render/software/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "novella", .module = novella },
+            .{ .name = "sheet", .module = sheet },
+            .{ .name = "text_engine", .module = text_engine },
+        },
+    });
+    software_renderer.addIncludePath(b.path("src/render/software/freetype_config"));
+    software_renderer.addIncludePath(b.path("vendor/freetype/include"));
+    software_renderer.linkLibrary(freetype);
+
+    if (target.result.os.tag == .windows) {
+        const windows_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/windows/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sheet", .module = sheet },
+                .{ .name = "text_engine", .module = text_engine },
+                .{ .name = "font_data", .module = font_data },
+                .{ .name = "software_renderer", .module = software_renderer },
+            },
+        });
+        windows_module.link_libc = true;
+        windows_module.linkSystemLibrary("gdi32", .{});
+        windows_module.linkSystemLibrary("user32", .{});
+        const windows_app = b.addExecutable(.{
+            .name = "novella",
+            .root_module = windows_module,
+            .win32_manifest = b.path("src/platform/windows/novella.manifest"),
+        });
+        windows_app.subsystem = .windows;
+
+        const install_windows = b.addInstallArtifact(windows_app, .{});
+        b.getInstallStep().dependOn(&install_windows.step);
+        const windows_step = b.step("windows", "Build the native Windows application");
+        windows_step.dependOn(&install_windows.step);
+
+        const run_windows_command = b.addRunArtifact(windows_app);
+        run_windows_command.step.dependOn(&install_windows.step);
+        if (b.args) |args| run_windows_command.addArgs(args);
+        const run_windows_step = b.step("run-windows", "Run the native Windows application");
+        run_windows_step.dependOn(&run_windows_command.step);
+        const run_step = b.step("run", "Run the native Windows application");
+        run_step.dependOn(&run_windows_command.step);
+    }
     xcb.root_module.link_libc = true;
     xcb.root_module.addIncludePath(b.path("vendor/xcb/src"));
     xcb.root_module.addIncludePath(b.path("vendor/xau/include"));
@@ -219,7 +246,12 @@ pub fn build(b: *std.Build) void {
             "bigreq.c",
             "xc_misc.c",
         },
-        .flags = &.{ "-std=c99", "-DHAVE_CONFIG_H=1" },
+        .flags = &.{
+            "-std=c99",
+            "-D_DEFAULT_SOURCE=1",
+            "-D_POSIX_C_SOURCE=200809L",
+            "-DHAVE_CONFIG_H=1",
+        },
     });
 
     const x11_module = b.createModule(.{
@@ -231,31 +263,39 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sheet", .module = sheet },
             .{ .name = "text_engine", .module = text_engine },
             .{ .name = "font_data", .module = font_data },
+            .{ .name = "software_renderer", .module = software_renderer },
         },
     });
     x11_module.addIncludePath(b.path("vendor/xcb/src"));
-    x11_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
-    x11_module.addIncludePath(b.path("vendor/freetype/include"));
     x11_module.linkLibrary(xcb);
     x11_module.linkLibrary(xau);
-    x11_module.linkLibrary(freetype);
 
-    const x11_render_test_module = b.createModule(.{
-        .root_source_file = b.path("src/platform/x11/render_test.zig"),
+    const software_render_test_module = b.createModule(.{
+        .root_source_file = b.path("src/render/software/render_test.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "novella", .module = novella },
             .{ .name = "sheet", .module = sheet },
             .{ .name = "text_engine", .module = text_engine },
             .{ .name = "font_data", .module = font_data },
         },
     });
-    x11_render_test_module.addIncludePath(b.path("src/platform/x11/freetype_config"));
-    x11_render_test_module.addIncludePath(b.path("vendor/freetype/include"));
-    x11_render_test_module.linkLibrary(freetype);
-    const x11_render_tests = b.addTest(.{ .root_module = x11_render_test_module });
-    const run_x11_render_tests = b.addRunArtifact(x11_render_tests);
-    test_step.dependOn(&run_x11_render_tests.step);
+    software_render_test_module.addIncludePath(b.path("src/render/software/freetype_config"));
+    software_render_test_module.addIncludePath(b.path("vendor/freetype/include"));
+    software_render_test_module.linkLibrary(freetype);
+    const software_render_tests = b.addTest(.{ .root_module = software_render_test_module });
+    const run_software_render_tests = b.addRunArtifact(software_render_tests);
+    test_step.dependOn(&run_software_render_tests.step);
+
+    const frame_request_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/x11/frame_request.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(frame_request_tests).step);
     const x11_app = b.addExecutable(.{
         .name = "novella-x11",
         .root_module = x11_module,

@@ -2,6 +2,20 @@
 
 # Changelog
 
+## 07/23/2026
+
+- Extracted the X11 software surface, HarfBuzz run cache, FreeType glyph cache,
+  and document painter into a platform-neutral software renderer.
+- Connected the native Win32 application to the shared Junicode,
+  HarfBuzz/justification, FreeType, and retained-sheet rendering path.
+- Added flicker-resistant GDI DIB presentation with coalesced `WM_SIZE`
+  invalidation and suppressed background erasure.
+- Lowered the x86 and x86-64 Windows baseline to Windows 7 while keeping ARM64
+  on Windows 10 or newer.
+- Added Windows file, stdin, and literal UTF-8 startup text support.
+- Scaled the Windows software page, typography, line metrics, and caret with
+  system DPI so high-density displays preserve the intended logical layout.
+
 ## 07/22/2026
 
 - Added the renderer-independent Knuth–Plass justification library.
