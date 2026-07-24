@@ -67,6 +67,9 @@ fn paint(
         const separator = std.mem.indexOfScalar(u8, rest, '\n');
         const paragraph_end = if (separator) |offset| paragraph_start + offset else text.len;
         const paragraph = text[paragraph_start..paragraph_end];
+        caret_x = geometry.content_left;
+        caret_y = baseline;
+        caret_row = row;
         if (paragraph.len > 0) {
             var layout = try novella.Layout.init(
                 allocator,
@@ -122,7 +125,7 @@ fn paint(
                 const last_word = layout.words[layout.words.len - 1];
                 const content_end = paragraph_start +
                     sliceOffset(paragraph, last_word.text) + last_word.text.len;
-                recordTrailingCaretStops(
+                caret_x = recordTrailingCaretStops(
                     document,
                     text,
                     content_end,
@@ -133,7 +136,7 @@ fn paint(
                     layout.natural_space_width,
                 );
             } else {
-                recordTrailingCaretStops(
+                caret_x = recordTrailingCaretStops(
                     document,
                     text,
                     paragraph_start,
@@ -143,6 +146,10 @@ fn paint(
                     caret_row,
                     layout.natural_space_width,
                 );
+            }
+            if (layout.lines.len == 0) {
+                baseline += sheet.line_height * scale;
+                row += 1;
             }
             baseline += sheet.paragraph_gap * scale;
         } else {
@@ -254,19 +261,19 @@ fn recordTrailingCaretStops(
     baseline: f64,
     row: usize,
     space_width: f64,
-) void {
-    const value = document orelse return;
-    if (end <= start) return;
+) f64 {
+    if (end <= start) return initial_x;
     var x = initial_x;
     var cursor = start;
-    value.addCaretStop(cursor, x, baseline, row);
+    if (document) |value| value.addCaretStop(cursor, x, baseline, row);
     while (cursor < end) {
         const sequence_len =
             std.unicode.utf8ByteSequenceLength(source[cursor]) catch 1;
         cursor = @min(end, cursor + @as(usize, @intCast(sequence_len)));
         x += space_width;
-        value.addCaretStop(cursor, x, baseline, row);
+        if (document) |value| value.addCaretStop(cursor, x, baseline, row);
     }
+    return x;
 }
 
 fn measureBodyText(context: ?*anyopaque, source: []const u8) f64 {

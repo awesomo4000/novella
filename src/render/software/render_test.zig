@@ -156,3 +156,49 @@ test "explicit empty paragraphs receive distinct visual caret rows" {
     try std.testing.expectEqual(@as(usize, 2), second_blank.row);
     try std.testing.expect(second_blank.baseline > first_blank.baseline);
 }
+
+test "space after a line break stays on the new visual row" {
+    const allocator = std.testing.allocator;
+    const font_bytes = try font_data.loadJunicode(allocator);
+    defer allocator.free(font_bytes);
+    var text_engine = try shaping.Engine.init(font_bytes, sheet.body_font_size);
+    defer text_engine.deinit();
+    var run_cache = RunCache.init(allocator, &text_engine);
+    defer run_cache.deinit();
+    var glyph_engine = try rasterizer.Engine.init(
+        allocator,
+        font_bytes,
+        sheet.body_font_size,
+    );
+    defer glyph_engine.deinit();
+    var surface = try Surface.init(allocator, .{
+        .bits_per_pixel = 32,
+        .scanline_pad = 32,
+        .lsb_first = true,
+        .red_mask = 0x00ff0000,
+        .green_mask = 0x0000ff00,
+        .blue_mask = 0x000000ff,
+    });
+    defer surface.deinit();
+    try surface.resize(900, 760);
+
+    const document = try allocator.create(editing.Editor);
+    defer allocator.destroy(document);
+    document.* = .{};
+    try document.setText("first\n \n");
+    try renderer.paintEditor(
+        &surface,
+        document,
+        &run_cache,
+        &glyph_engine,
+        1.0,
+    );
+
+    const line_start = document.caretStopForOffset(6).?;
+    const after_space = document.caretStopForOffset(7).?;
+    const following_line = document.caretStopForOffset(8).?;
+    try std.testing.expectEqual(line_start.row, after_space.row);
+    try std.testing.expect(after_space.x > line_start.x);
+    try std.testing.expectEqual(line_start.row + 1, following_line.row);
+    try std.testing.expect(following_line.baseline > after_space.baseline);
+}
